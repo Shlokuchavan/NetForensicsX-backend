@@ -1,0 +1,4774 @@
+"use client";
+
+import {
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+
+import { useParams } from "next/navigation";
+
+import {
+  analyzeEvidence,
+  discoverHosts,
+  getCaseEvidence,
+  getCases,
+  getDiscoveredHosts,
+  getEvidenceAnalysis,
+  getEvidenceFlows,
+  getNetworkTopology,
+  uploadEvidence,
+  type Case,
+  type Evidence,
+  type NetworkFlow,
+  type NetworkHost,
+  type NetworkTopology,
+  type PcapAnalysis,
+} from "@/lib/api";
+
+
+/* =========================================================
+   TYPES
+========================================================= */
+
+type TabId =
+  | "overview"
+  | "evidence"
+  | "analysis"
+  | "hosts"
+  | "flows"
+  | "topology";
+
+type Theme =
+  | "light"
+  | "dark";
+
+type TopologyZone =
+  | "internal"
+  | "infrastructure"
+  | "external";
+
+type TopologyPosition = {
+  x: number;
+  y: number;
+};
+
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function formatNumber(
+  value: number
+): string {
+  return new Intl.NumberFormat(
+    "en-US"
+  ).format(value);
+}
+
+
+function formatBytes(
+  bytes: number
+): string {
+  if (
+    !Number.isFinite(bytes) ||
+    bytes <= 0
+  ) {
+    return "0 B";
+  }
+
+  const units = [
+    "B",
+    "KB",
+    "MB",
+    "GB",
+    "TB",
+  ];
+
+  const index = Math.min(
+    Math.floor(
+      Math.log(bytes) /
+        Math.log(1024)
+    ),
+    units.length - 1
+  );
+
+  return `${(
+    bytes /
+    Math.pow(1024, index)
+  ).toFixed(
+    index === 0 ? 0 : 2
+  )} ${units[index]}`;
+}
+
+
+function formatTimestamp(
+  timestamp: number | null
+): string {
+  if (timestamp === null) {
+    return "—";
+  }
+
+  return new Date(
+    timestamp * 1000
+  ).toLocaleString();
+}
+
+
+function formatDuration(
+  seconds: number
+): string {
+  if (!Number.isFinite(seconds)) {
+    return "—";
+  }
+
+  const hours = Math.floor(
+    seconds / 3600
+  );
+
+  const minutes = Math.floor(
+    (seconds % 3600) / 60
+  );
+
+  const remainingSeconds =
+    Math.floor(seconds % 60);
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${remainingSeconds}s`;
+  }
+
+  if (minutes > 0) {
+    return `${minutes}m ${remainingSeconds}s`;
+  }
+
+  return `${remainingSeconds}s`;
+}
+
+
+function isPrivateIP(
+  ip: string
+): boolean {
+  const value = ip.trim();
+
+  if (
+    value === "localhost" ||
+    value === "127.0.0.1" ||
+    value === "::1"
+  ) {
+    return true;
+  }
+
+  if (
+    value.startsWith("10.") ||
+    value.startsWith("192.168.")
+  ) {
+    return true;
+  }
+
+  if (value.startsWith("172.")) {
+    const secondOctet =
+      Number(
+        value
+          .split(".")[1]
+      );
+
+    if (
+      secondOctet >= 16 &&
+      secondOctet <= 31
+    ) {
+      return true;
+    }
+  }
+
+  if (
+    value.startsWith("169.254.")
+  ) {
+    return true;
+  }
+
+  if (value.startsWith("fc") ||
+      value.startsWith("fd")) {
+    return true;
+  }
+
+  return false;
+}
+
+
+function isDNSNode(
+  node: NetworkTopology["nodes"][number]
+): boolean {
+  const value = `${node.id} ${node.label}`.toLowerCase();
+
+  return (
+    value.includes("dns") ||
+    value.includes(":53") ||
+    value.includes("domain")
+  );
+}
+
+
+function getNodeIP(
+  node: NetworkTopology["nodes"][number]
+): string {
+  return node.id || node.label;
+}
+
+
+function classifyNode(
+  node: NetworkTopology["nodes"][number]
+): TopologyZone {
+  const ip =
+    getNodeIP(node);
+
+  if (isDNSNode(node)) {
+    return "infrastructure";
+  }
+
+  if (isPrivateIP(ip)) {
+    return "internal";
+  }
+
+  return "external";
+}
+
+
+function getProtocolLabel(
+  edge: NetworkTopology["edges"][number]
+): string {
+  const candidate = edge as NetworkTopology["edges"][number] & {
+    protocol?: string;
+    protocols?: string[];
+    destination_port?: number;
+    port?: number;
+  };
+
+  if (
+    Array.isArray(
+      candidate.protocols
+    ) &&
+    candidate.protocols.length > 0
+  ) {
+    return candidate.protocols
+      .slice(0, 2)
+      .join(" / ");
+  }
+
+  if (
+    typeof candidate.protocol ===
+    "string"
+  ) {
+    return candidate.protocol;
+  }
+
+  return "FLOW";
+}
+
+
+function getEdgePortLabel(
+  edge: NetworkTopology["edges"][number]
+): string {
+  const candidate = edge as NetworkTopology["edges"][number] & {
+    destination_port?: number;
+    port?: number;
+  };
+
+  if (
+    typeof candidate.destination_port ===
+    "number"
+  ) {
+    return `:${candidate.destination_port}`;
+  }
+
+  if (
+    typeof candidate.port ===
+    "number"
+  ) {
+    return `:${candidate.port}`;
+  }
+
+  return "";
+}
+
+
+/* =========================================================
+   ICONS
+========================================================= */
+
+function Icon({
+  name,
+  size = 18,
+}: {
+  name:
+    | "arrow"
+    | "chevron"
+    | "upload"
+    | "file"
+    | "activity"
+    | "server"
+    | "network"
+    | "topology"
+    | "search"
+    | "refresh"
+    | "sun"
+    | "moon"
+    | "check"
+    | "clock"
+    | "shield"
+    | "box";
+  size?: number;
+}) {
+  const common = {
+    width: size,
+    height: size,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap:
+      "round" as const,
+    strokeLinejoin:
+      "round" as const,
+  };
+
+  switch (name) {
+    case "arrow":
+      return (
+        <svg {...common}>
+          <path d="M19 12H5" />
+          <path d="m12 19-7-7 7-7" />
+        </svg>
+      );
+
+    case "chevron":
+      return (
+        <svg {...common}>
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      );
+
+    case "upload":
+      return (
+        <svg {...common}>
+          <path d="M12 16V4" />
+          <path d="m7 9 5-5 5 5" />
+          <path d="M5 20h14" />
+        </svg>
+      );
+
+    case "file":
+      return (
+        <svg {...common}>
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+          <path d="M14 2v6h6" />
+          <path d="M8 13h8" />
+          <path d="M8 17h5" />
+        </svg>
+      );
+
+    case "activity":
+      return (
+        <svg {...common}>
+          <path d="M3 12h4l3-8 4 16 3-8h4" />
+        </svg>
+      );
+
+    case "server":
+      return (
+        <svg {...common}>
+          <rect
+            x="3"
+            y="4"
+            width="18"
+            height="6"
+            rx="1"
+          />
+          <rect
+            x="3"
+            y="14"
+            width="18"
+            height="6"
+            rx="1"
+          />
+          <path d="M7 7h.01" />
+          <path d="M7 17h.01" />
+        </svg>
+      );
+
+    case "network":
+      return (
+        <svg {...common}>
+          <circle
+            cx="12"
+            cy="5"
+            r="2"
+          />
+          <circle
+            cx="5"
+            cy="19"
+            r="2"
+          />
+          <circle
+            cx="19"
+            cy="19"
+            r="2"
+          />
+          <path d="m10.8 6.7-4.6 10.6" />
+          <path d="m13.2 6.7 4.6 10.6" />
+          <path d="M7 19h10" />
+        </svg>
+      );
+
+    case "topology":
+      return (
+        <svg {...common}>
+          <circle
+            cx="6"
+            cy="12"
+            r="2.5"
+          />
+          <circle
+            cx="18"
+            cy="6"
+            r="2.5"
+          />
+          <circle
+            cx="18"
+            cy="18"
+            r="2.5"
+          />
+          <path d="m8.2 11 7.4-4" />
+          <path d="m8.2 13 7.4 4" />
+        </svg>
+      );
+
+    case "search":
+      return (
+        <svg {...common}>
+          <circle
+            cx="11"
+            cy="11"
+            r="7"
+          />
+          <path d="m20 20-4-4" />
+        </svg>
+      );
+
+    case "refresh":
+      return (
+        <svg {...common}>
+          <path d="M20 11a8.1 8.1 0 0 0-14.8-4L3 10" />
+          <path d="M3 4v6h6" />
+          <path d="M4 13a8.1 8.1 0 0 0 14.8 4L21 14" />
+          <path d="M21 20v-6h-6" />
+        </svg>
+      );
+
+    case "sun":
+      return (
+        <svg {...common}>
+          <circle
+            cx="12"
+            cy="12"
+            r="4"
+          />
+          <path d="M12 2v2" />
+          <path d="M12 20v2" />
+          <path d="m4.93 4.93 1.41 1.41" />
+          <path d="m17.66 17.66 1.41 1.41" />
+          <path d="M2 12h2" />
+          <path d="M20 12h2" />
+          <path d="m6.34 17.66-1.41 1.41" />
+          <path d="m19.07 4.93-1.41 1.41" />
+        </svg>
+      );
+
+    case "moon":
+      return (
+        <svg {...common}>
+          <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z" />
+        </svg>
+      );
+
+    case "check":
+      return (
+        <svg {...common}>
+          <path d="m5 12 4 4L19 6" />
+        </svg>
+      );
+
+    case "clock":
+      return (
+        <svg {...common}>
+          <circle
+            cx="12"
+            cy="12"
+            r="9"
+          />
+          <path d="M12 7v5l3 2" />
+        </svg>
+      );
+
+    case "shield":
+      return (
+        <svg {...common}>
+          <path d="M12 3 20 6v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-3Z" />
+          <path d="m9 12 2 2 4-4" />
+        </svg>
+      );
+
+    case "box":
+      return (
+        <svg {...common}>
+          <path d="m21 8-9-5-9 5 9 5 9-5Z" />
+          <path d="M3 8v8l9 5 9-5V8" />
+          <path d="M12 13v8" />
+        </svg>
+      );
+
+    default:
+      return null;
+  }
+}
+
+
+/* =========================================================
+   THEME TOGGLE
+========================================================= */
+
+function ThemeToggle({
+  theme,
+  onToggle,
+}: {
+  theme: Theme;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label="Toggle theme"
+      className="group flex h-10 items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 text-zinc-600 shadow-sm transition hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:bg-zinc-800"
+    >
+      {theme === "light" ? (
+        <Icon
+          name="sun"
+          size={17}
+        />
+      ) : (
+        <Icon
+          name="moon"
+          size={17}
+        />
+      )}
+
+      <span className="hidden text-xs font-medium sm:block">
+        {theme === "light"
+          ? "Light"
+          : "Dark"}
+      </span>
+    </button>
+  );
+}
+
+
+/* =========================================================
+   STAT CARD
+========================================================= */
+
+function StatCard({
+  label,
+  value,
+  description,
+  icon,
+}: {
+  label: string;
+  value: string | number;
+  description?: string;
+  icon?: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.03)] transition hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700">
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
+            {label}
+          </p>
+
+          <p className="mt-3 text-2xl font-semibold tracking-tight text-zinc-950 dark:text-white">
+            {value}
+          </p>
+        </div>
+
+        {icon && (
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+            {icon}
+          </div>
+        )}
+      </div>
+
+      {description && (
+        <p className="mt-2 text-xs text-zinc-500">
+          {description}
+        </p>
+      )}
+    </div>
+  );
+}
+
+
+/* =========================================================
+   TAB NAVIGATION
+========================================================= */
+
+function CaseTabs({
+  activeTab,
+  onChange,
+}: {
+  activeTab: TabId;
+  onChange: (
+    tab: TabId
+  ) => void;
+}) {
+  const tabs: {
+    id: TabId;
+    label: string;
+    icon: React.ReactNode;
+  }[] = [
+    {
+      id: "overview",
+      label: "Overview",
+      icon: (
+        <Icon
+          name="activity"
+          size={16}
+        />
+      ),
+    },
+    {
+      id: "evidence",
+      label: "Evidence",
+      icon: (
+        <Icon
+          name="file"
+          size={16}
+        />
+      ),
+    },
+    {
+      id: "analysis",
+      label: "PCAP Analysis",
+      icon: (
+        <Icon
+          name="box"
+          size={16}
+        />
+      ),
+    },
+    {
+      id: "hosts",
+      label: "Hosts",
+      icon: (
+        <Icon
+          name="server"
+          size={16}
+        />
+      ),
+    },
+    {
+      id: "flows",
+      label: "Network Flows",
+      icon: (
+        <Icon
+          name="network"
+          size={16}
+        />
+      ),
+    },
+    {
+      id: "topology",
+      label: "Topology",
+      icon: (
+        <Icon
+          name="topology"
+          size={16}
+        />
+      ),
+    },
+  ];
+
+  return (
+    <div className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="mx-auto max-w-[1600px] overflow-x-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex min-w-max">
+          {tabs.map((tab) => {
+            const active =
+              activeTab === tab.id;
+
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() =>
+                  onChange(tab.id)
+                }
+                className={`relative flex items-center gap-2 px-4 py-4 text-sm font-medium transition ${
+                  active
+                    ? "text-zinc-950 dark:text-white"
+                    : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+                }`}
+              >
+                {tab.icon}
+
+                {tab.label}
+
+                {active && (
+                  <span className="absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-zinc-950 dark:bg-white" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* =========================================================
+   OVERVIEW TAB
+========================================================= */
+
+function OverviewTab({
+  evidence,
+  analysisMap,
+  selectedEvidence,
+  onSelectEvidence,
+  onAnalyze,
+}: {
+  evidence: Evidence[];
+  analysisMap: Record<
+    string,
+    PcapAnalysis | null
+  >;
+  selectedEvidence: Evidence | null;
+  onSelectEvidence: (
+    id: string
+  ) => void;
+  onAnalyze: (
+    id: string
+  ) => void;
+}) {
+  const selectedAnalysis =
+    selectedEvidence
+      ? analysisMap[
+          selectedEvidence.id
+        ]
+      : null;
+
+  const analyzedCount =
+    Object.values(
+      analysisMap
+    ).filter(Boolean).length;
+
+  return (
+    <div className="space-y-6">
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          label="Evidence Files"
+          value={evidence.length}
+          description="PCAP files attached to this case"
+          icon={
+            <Icon
+              name="file"
+              size={17}
+            />
+          }
+        />
+
+        <StatCard
+          label="Analyzed"
+          value={analyzedCount}
+          description="Evidence files successfully analyzed"
+          icon={
+            <Icon
+              name="check"
+              size={17}
+            />
+          }
+        />
+
+        <StatCard
+          label="Hosts"
+          value={
+            selectedAnalysis
+              ? formatNumber(
+                  selectedAnalysis.host_count
+                )
+              : "—"
+          }
+          description="Hosts in selected evidence"
+          icon={
+            <Icon
+              name="server"
+              size={17}
+            />
+          }
+        />
+
+        <StatCard
+          label="Network Flows"
+          value={
+            selectedAnalysis
+              ? formatNumber(
+                  selectedAnalysis.flow_count
+                )
+              : "—"
+          }
+          description="Aggregated communications"
+          icon={
+            <Icon
+              name="network"
+              size={17}
+            />
+          }
+        />
+      </div>
+
+
+      <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-zinc-950 dark:text-white">
+                Investigation Summary
+              </h2>
+
+              <p className="mt-1 text-xs text-zinc-500">
+                Current state of the selected evidence.
+              </p>
+            </div>
+
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+              <Icon
+                name="shield"
+                size={17}
+              />
+            </div>
+          </div>
+
+          {selectedAnalysis ? (
+            <div className="mt-6 grid gap-5 sm:grid-cols-2">
+              <div>
+                <p className="text-xs text-zinc-400">
+                  Capture duration
+                </p>
+
+                <p className="mt-1 font-medium text-zinc-900 dark:text-white">
+                  {formatDuration(
+                    selectedAnalysis.duration
+                  )}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs text-zinc-400">
+                  Packets
+                </p>
+
+                <p className="mt-1 font-medium text-zinc-900 dark:text-white">
+                  {formatNumber(
+                    selectedAnalysis.packet_count
+                  )}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs text-zinc-400">
+                  TCP traffic
+                </p>
+
+                <p className="mt-1 font-medium text-zinc-900 dark:text-white">
+                  {formatNumber(
+                    selectedAnalysis.tcp_count
+                  )}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs text-zinc-400">
+                  UDP traffic
+                </p>
+
+                <p className="mt-1 font-medium text-zinc-900 dark:text-white">
+                  {formatNumber(
+                    selectedAnalysis.udp_count
+                  )}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-6 rounded-xl border border-dashed border-zinc-300 p-6 text-center dark:border-zinc-700">
+              <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+                No analysis selected
+              </p>
+
+              <p className="mt-1 text-xs text-zinc-500">
+                Analyze a PCAP to populate investigation data.
+              </p>
+            </div>
+          )}
+        </div>
+
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <h2 className="text-sm font-semibold text-zinc-950 dark:text-white">
+            Selected Evidence
+          </h2>
+
+          {selectedEvidence ? (
+            <div className="mt-5">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                <Icon
+                  name="file"
+                  size={19}
+                />
+              </div>
+
+              <p className="mt-4 break-all text-sm font-medium text-zinc-900 dark:text-white">
+                {selectedEvidence.original_filename}
+              </p>
+
+              <p className="mt-2 text-xs text-zinc-500">
+                {formatBytes(
+                  selectedEvidence.file_size
+                )}
+              </p>
+
+              <div className="mt-4 rounded-xl bg-zinc-50 p-3 dark:bg-zinc-950">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                  SHA-256
+                </p>
+
+                <p className="mt-1 break-all font-mono text-[10px] leading-5 text-zinc-600 dark:text-zinc-400">
+                  {selectedEvidence.sha256}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-5 text-sm text-zinc-500">
+              No evidence available.
+            </p>
+          )}
+        </div>
+      </div>
+
+
+      <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+
+        <div className="border-b border-zinc-200 p-6 dark:border-zinc-800">
+          <h2 className="text-sm font-semibold text-zinc-950 dark:text-white">
+            Recent Evidence
+          </h2>
+
+          <p className="mt-1 text-xs text-zinc-500">
+            Select a PCAP to make it the active investigation source.
+          </p>
+        </div>
+
+        <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+
+          {evidence.map((item) => {
+            const selected =
+              selectedEvidence?.id ===
+              item.id;
+
+            const analysis =
+              analysisMap[item.id];
+
+            return (
+              <div
+                key={item.id}
+                className={`flex flex-col gap-4 p-5 transition sm:flex-row sm:items-center sm:justify-between ${
+                  selected
+                    ? "bg-zinc-50 dark:bg-zinc-950"
+                    : "hover:bg-zinc-50 dark:hover:bg-zinc-950"
+                }`}
+              >
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    onSelectEvidence(
+                      item.id
+                    )
+                  }
+                  className="min-w-0 text-left"
+                >
+                  <div className="flex items-center gap-3">
+
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                      <Icon
+                        name="file"
+                        size={16}
+                      />
+                    </div>
+
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-zinc-900 dark:text-white">
+                        {item.original_filename}
+                      </p>
+
+                      <p className="mt-1 text-xs text-zinc-500">
+                        {formatBytes(
+                          item.file_size
+                        )}
+                        {" · "}
+                        {analysis
+                          ? "Analyzed"
+                          : "Not analyzed"}
+                      </p>
+                    </div>
+
+                  </div>
+                </button>
+
+                <div className="flex items-center gap-2">
+
+                  {selected && (
+                    <span className="rounded-full bg-zinc-900 px-3 py-1.5 text-[11px] font-medium text-white dark:bg-white dark:text-zinc-900">
+                      Active
+                    </span>
+                  )}
+
+                  {!analysis && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onAnalyze(
+                          item.id
+                        )
+                      }
+                      className="rounded-lg bg-zinc-950 px-3 py-2 text-xs font-medium text-white transition hover:bg-zinc-800 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
+                    >
+                      Analyze
+                    </button>
+                  )}
+
+                </div>
+
+              </div>
+            );
+          })}
+
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+
+/* =========================================================
+   EVIDENCE TAB
+========================================================= */
+
+function EvidenceTab({
+  evidence,
+  selectedEvidenceId,
+  analysisMap,
+  onSelect,
+  onAnalyze,
+  onUpload,
+  uploading,
+  analyzingId,
+}: {
+  evidence: Evidence[];
+  selectedEvidenceId: string | null;
+  analysisMap: Record<
+    string,
+    PcapAnalysis | null
+  >;
+  onSelect: (
+    id: string
+  ) => void;
+  onAnalyze: (
+    id: string
+  ) => void;
+  onUpload: (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => void;
+  uploading: boolean;
+  analyzingId: string | null;
+}) {
+  return (
+    <div className="space-y-6">
+
+      <div className="flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800 dark:bg-zinc-900">
+
+        <div>
+          <h2 className="text-base font-semibold text-zinc-950 dark:text-white">
+            Evidence Management
+          </h2>
+
+          <p className="mt-1 text-sm text-zinc-500">
+            Upload and manage PCAP evidence associated with this case.
+          </p>
+        </div>
+
+        <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-zinc-950 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200">
+
+          <Icon
+            name="upload"
+            size={16}
+          />
+
+          {uploading
+            ? "Uploading..."
+            : "Upload PCAP"}
+
+          <input
+            type="file"
+            accept=".pcap,.pcapng,.cap"
+            className="hidden"
+            disabled={uploading}
+            onChange={onUpload}
+          />
+
+        </label>
+
+      </div>
+
+
+      {evidence.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-zinc-300 bg-white p-12 text-center dark:border-zinc-700 dark:bg-zinc-900">
+
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-zinc-100 text-zinc-500 dark:bg-zinc-800">
+            <Icon
+              name="file"
+              size={20}
+            />
+          </div>
+
+          <h3 className="mt-4 text-sm font-semibold text-zinc-900 dark:text-white">
+            No evidence uploaded
+          </h3>
+
+          <p className="mx-auto mt-1 max-w-md text-xs leading-5 text-zinc-500">
+            Upload a PCAP or PCAPNG file to begin the forensic investigation.
+          </p>
+
+        </div>
+      ) : (
+        <div className="grid gap-4">
+
+          {evidence.map((item) => {
+            const selected =
+              item.id ===
+              selectedEvidenceId;
+
+            const analysis =
+              analysisMap[item.id];
+
+            return (
+              <div
+                key={item.id}
+                className={`rounded-2xl border bg-white p-6 shadow-sm transition dark:bg-zinc-900 ${
+                  selected
+                    ? "border-zinc-950 ring-1 ring-zinc-950 dark:border-white dark:ring-white"
+                    : "border-zinc-200 dark:border-zinc-800"
+                }`}
+              >
+
+                <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onSelect(
+                        item.id
+                      )
+                    }
+                    className="min-w-0 text-left"
+                  >
+                    <div className="flex items-start gap-4">
+
+                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                        <Icon
+                          name="file"
+                          size={19}
+                        />
+                      </div>
+
+                      <div className="min-w-0">
+
+                        <p className="break-all text-sm font-semibold text-zinc-950 dark:text-white">
+                          {item.original_filename}
+                        </p>
+
+                        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500">
+
+                          <span>
+                            {formatBytes(
+                              item.file_size
+                            )}
+                          </span>
+
+                          <span>
+                            {item.status}
+                          </span>
+
+                          <span>
+                            {new Date(
+                              item.created_at
+                            ).toLocaleString()}
+                          </span>
+
+                        </div>
+
+                      </div>
+
+                    </div>
+                  </button>
+
+
+                  <div className="flex shrink-0 items-center gap-2">
+
+                    {selected && (
+                      <span className="rounded-full bg-zinc-100 px-3 py-1.5 text-[11px] font-medium text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+                        Active
+                      </span>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onAnalyze(
+                          item.id
+                        )
+                      }
+                      disabled={
+                        analyzingId ===
+                        item.id
+                      }
+                      className="rounded-lg bg-zinc-950 px-3 py-2 text-xs font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
+                    >
+                      {analyzingId ===
+                      item.id
+                        ? "Analyzing..."
+                        : analysis
+                          ? "Re-analyze"
+                          : "Analyze PCAP"}
+                    </button>
+
+                  </div>
+
+                </div>
+
+
+                <div className="mt-5 rounded-xl bg-zinc-50 p-4 dark:bg-zinc-950">
+
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
+                    SHA-256
+                  </p>
+
+                  <p className="mt-1 break-all font-mono text-[10px] leading-5 text-zinc-600 dark:text-zinc-400">
+                    {item.sha256}
+                  </p>
+
+                </div>
+
+              </div>
+            );
+          })}
+
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+
+/* =========================================================
+   PCAP ANALYSIS TAB
+========================================================= */
+
+function AnalysisTab({
+  analysis,
+}: {
+  analysis: PcapAnalysis | null;
+}) {
+  if (!analysis) {
+    return (
+      <EmptyState
+        title="No PCAP analysis available"
+        description="Select evidence and analyze the PCAP before opening this section."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+
+        <StatCard
+          label="Packets"
+          value={formatNumber(
+            analysis.packet_count
+          )}
+        />
+
+        <StatCard
+          label="Hosts"
+          value={formatNumber(
+            analysis.host_count
+          )}
+        />
+
+        <StatCard
+          label="TCP"
+          value={formatNumber(
+            analysis.tcp_count
+          )}
+        />
+
+        <StatCard
+          label="UDP"
+          value={formatNumber(
+            analysis.udp_count
+          )}
+        />
+
+        <StatCard
+          label="Flows"
+          value={formatNumber(
+            analysis.flow_count
+          )}
+        />
+
+        <StatCard
+          label="DNS"
+          value={formatNumber(
+            analysis.dns_count
+          )}
+        />
+
+        <StatCard
+          label="HTTP"
+          value={formatNumber(
+            analysis.http_count
+          )}
+        />
+
+        <StatCard
+          label="HTTPS"
+          value={formatNumber(
+            analysis.https_count
+          )}
+        />
+
+        <StatCard
+          label="ICMP"
+          value={formatNumber(
+            analysis.icmp_count
+          )}
+        />
+
+        <StatCard
+          label="Duration"
+          value={formatDuration(
+            analysis.duration
+          )}
+        />
+
+      </div>
+
+
+      <div className="grid gap-6 lg:grid-cols-2">
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+
+          <div className="flex items-center gap-3">
+
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+              <Icon
+                name="clock"
+                size={17}
+              />
+            </div>
+
+            <div>
+              <h2 className="text-sm font-semibold text-zinc-950 dark:text-white">
+                Capture Window
+              </h2>
+
+              <p className="text-xs text-zinc-500">
+                Original packet capture period
+              </p>
+            </div>
+
+          </div>
+
+
+          <div className="mt-6 space-y-5">
+
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                Start
+              </p>
+
+              <p className="mt-1 text-sm text-zinc-800 dark:text-zinc-200">
+                {formatTimestamp(
+                  analysis.capture_start
+                )}
+              </p>
+            </div>
+
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                End
+              </p>
+
+              <p className="mt-1 text-sm text-zinc-800 dark:text-zinc-200">
+                {formatTimestamp(
+                  analysis.capture_end
+                )}
+              </p>
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+
+          <h2 className="text-sm font-semibold text-zinc-950 dark:text-white">
+            Analysis Status
+          </h2>
+
+          <div className="mt-5 flex items-center gap-3">
+
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+              <Icon
+                name="check"
+                size={19}
+              />
+            </div>
+
+            <div>
+
+              <p className="text-sm font-medium capitalize text-zinc-900 dark:text-white">
+                {analysis.status}
+              </p>
+
+              <p className="mt-1 text-xs text-zinc-500">
+                Analysis created{" "}
+                {new Date(
+                  analysis.created_at
+                ).toLocaleString()}
+              </p>
+
+            </div>
+
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+  );
+}
+
+
+/* =========================================================
+   HOSTS TAB
+========================================================= */
+
+function HostsTab({
+  caseId,
+  evidenceId,
+  analysis,
+}: {
+  caseId: string;
+  evidenceId: string;
+  analysis: PcapAnalysis | null;
+}) {
+  const [hosts, setHosts] =
+    useState<NetworkHost[]>([]);
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [discovering, setDiscovering] =
+    useState(false);
+
+  const [error, setError] =
+    useState<string | null>(null);
+
+  const [search, setSearch] =
+    useState("");
+
+
+  async function loadHosts() {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const data =
+        await getDiscoveredHosts(
+          caseId,
+          evidenceId
+        );
+
+      setHosts(data);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load hosts"
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+
+  async function handleDiscover() {
+    try {
+      setDiscovering(true);
+      setError(null);
+
+      const data =
+        await discoverHosts(
+          caseId,
+          evidenceId
+        );
+
+      setHosts(data);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to discover hosts"
+      );
+    } finally {
+      setDiscovering(false);
+    }
+  }
+
+
+  useEffect(() => {
+    void loadHosts();
+  }, [
+    caseId,
+    evidenceId,
+  ]);
+
+
+  const filteredHosts =
+    useMemo(() => {
+      const query =
+        search
+          .trim()
+          .toLowerCase();
+
+      if (!query) {
+        return hosts;
+      }
+
+      return hosts.filter(
+        (host) =>
+          host.ip_address
+            .toLowerCase()
+            .includes(query)
+      );
+    }, [
+      hosts,
+      search,
+    ]);
+
+
+  const totalPackets =
+    hosts.reduce(
+      (sum, host) =>
+        sum +
+        host.packets_sent +
+        host.packets_received,
+      0
+    );
+
+
+  const totalBytes =
+    hosts.reduce(
+      (sum, host) =>
+        sum +
+        host.bytes_sent +
+        host.bytes_received,
+      0
+    );
+
+
+  const mostActive =
+    hosts.length > 0
+      ? [...hosts].sort(
+          (a, b) =>
+            b.packets_sent +
+            b.packets_received -
+            (a.packets_sent +
+              a.packets_received)
+        )[0]
+      : null;
+
+
+  if (!analysis) {
+    return (
+      <EmptyState
+        title="Analyze the PCAP first"
+        description="Host discovery is built from the network flows generated during PCAP analysis."
+      />
+    );
+  }
+
+
+  return (
+    <div className="space-y-6">
+
+      <div className="flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800 dark:bg-zinc-900">
+
+        <div>
+          <h2 className="text-base font-semibold text-zinc-950 dark:text-white">
+            Host Discovery
+          </h2>
+
+          <p className="mt-1 text-sm text-zinc-500">
+            Hosts derived from communication flows in the selected PCAP.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleDiscover}
+          disabled={discovering}
+          className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-950 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-zinc-950 dark:hover:bg-zinc-200"
+        >
+
+          <Icon
+            name="refresh"
+            size={16}
+          />
+
+          {discovering
+            ? "Discovering..."
+            : hosts.length > 0
+              ? "Refresh Hosts"
+              : "Discover Hosts"}
+
+        </button>
+
+      </div>
+
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+
+        <StatCard
+          label="Hosts"
+          value={formatNumber(
+            hosts.length
+          )}
+          description={`Analysis reported ${analysis.host_count}`}
+          icon={
+            <Icon
+              name="server"
+              size={17}
+            />
+          }
+        />
+
+        <StatCard
+          label="Packets"
+          value={formatNumber(
+            totalPackets
+          )}
+          description="Sent + received"
+        />
+
+        <StatCard
+          label="Traffic"
+          value={formatBytes(
+            totalBytes
+          )}
+          description="Sent + received"
+        />
+
+        <StatCard
+          label="Most Active"
+          value={
+            mostActive
+              ? mostActive.ip_address
+              : "—"
+          }
+          description={
+            mostActive
+              ? `${formatNumber(
+                  mostActive.packets_sent +
+                    mostActive.packets_received
+                )} packets`
+              : "No data"
+          }
+        />
+
+      </div>
+
+
+      <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+
+        <div className="flex flex-col gap-4 border-b border-zinc-200 p-5 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800">
+
+          <div>
+            <h3 className="text-sm font-semibold text-zinc-950 dark:text-white">
+              Discovered Hosts
+            </h3>
+
+            <p className="mt-1 text-xs text-zinc-500">
+              {filteredHosts.length} hosts shown
+            </p>
+          </div>
+
+          <div className="relative">
+
+            <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400">
+              <Icon
+                name="search"
+                size={15}
+              />
+            </div>
+
+            <input
+              value={search}
+              onChange={(event) =>
+                setSearch(
+                  event.target.value
+                )
+              }
+              placeholder="Search IP..."
+              className="w-full rounded-xl border border-zinc-200 bg-zinc-50 py-2 pl-9 pr-3 text-xs outline-none transition focus:border-zinc-400 sm:w-60 dark:border-zinc-700 dark:bg-zinc-950"
+            />
+
+          </div>
+
+        </div>
+
+
+        {loading ? (
+          <div className="p-10 text-center text-sm text-zinc-500">
+            Loading hosts...
+          </div>
+        ) : error ? (
+          <div className="p-10 text-center text-sm text-red-600">
+            {error}
+          </div>
+        ) : filteredHosts.length === 0 ? (
+          <div className="p-10 text-center text-sm text-zinc-500">
+            No hosts found.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+
+            <table className="w-full min-w-[1000px] text-left">
+
+              <thead className="bg-zinc-50 dark:bg-zinc-950">
+
+                <tr className="border-b border-zinc-200 dark:border-zinc-800">
+
+                  {[
+                    "IP Address",
+                    "Packets Sent",
+                    "Packets Received",
+                    "Bytes Sent",
+                    "Bytes Received",
+                    "Destinations",
+                    "Sources",
+                    "First Seen",
+                    "Last Seen",
+                  ].map(
+                    (heading) => (
+                      <th
+                        key={heading}
+                        className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400"
+                      >
+                        {heading}
+                      </th>
+                    )
+                  )}
+
+                </tr>
+
+              </thead>
+
+              <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+
+                {filteredHosts.map(
+                  (host) => (
+                    <tr
+                      key={host.id}
+                      className="transition hover:bg-zinc-50 dark:hover:bg-zinc-950"
+                    >
+
+                      <td className="px-5 py-4">
+                        <span className="font-mono text-xs font-medium text-zinc-900 dark:text-white">
+                          {host.ip_address}
+                        </span>
+                      </td>
+
+                      <td className="px-5 py-4 text-xs tabular-nums">
+                        {formatNumber(
+                          host.packets_sent
+                        )}
+                      </td>
+
+                      <td className="px-5 py-4 text-xs tabular-nums">
+                        {formatNumber(
+                          host.packets_received
+                        )}
+                      </td>
+
+                      <td className="px-5 py-4 text-xs tabular-nums">
+                        {formatBytes(
+                          host.bytes_sent
+                        )}
+                      </td>
+
+                      <td className="px-5 py-4 text-xs tabular-nums">
+                        {formatBytes(
+                          host.bytes_received
+                        )}
+                      </td>
+
+                      <td className="px-5 py-4 text-xs tabular-nums">
+                        {host.unique_destinations}
+                      </td>
+
+                      <td className="px-5 py-4 text-xs tabular-nums">
+                        {host.unique_sources}
+                      </td>
+
+                      <td className="whitespace-nowrap px-5 py-4 text-[11px] text-zinc-500">
+                        {formatTimestamp(
+                          host.first_seen
+                        )}
+                      </td>
+
+                      <td className="whitespace-nowrap px-5 py-4 text-[11px] text-zinc-500">
+                        {formatTimestamp(
+                          host.last_seen
+                        )}
+                      </td>
+
+                    </tr>
+                  )
+                )}
+
+              </tbody>
+
+            </table>
+
+          </div>
+        )}
+
+      </div>
+
+    </div>
+  );
+}
+
+
+/* =========================================================
+   FLOWS TAB
+========================================================= */
+
+function FlowsTab({
+  caseId,
+  evidenceId,
+  analysis,
+}: {
+  caseId: string;
+  evidenceId: string;
+  analysis: PcapAnalysis | null;
+}) {
+  const [flows, setFlows] =
+    useState<NetworkFlow[]>([]);
+
+  const [protocol, setProtocol] =
+    useState("ALL");
+
+  const [page, setPage] =
+    useState(0);
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [error, setError] =
+    useState<string | null>(null);
+
+  const pageSize = 25;
+
+
+  async function loadFlows() {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const data =
+        await getEvidenceFlows(
+          caseId,
+          evidenceId,
+          {
+            limit: pageSize,
+            offset:
+              page * pageSize,
+            protocol,
+          }
+        );
+
+      setFlows(data);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load flows"
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+
+  useEffect(() => {
+    void loadFlows();
+  }, [
+    caseId,
+    evidenceId,
+    page,
+    protocol,
+  ]);
+
+
+  if (!analysis) {
+    return (
+      <EmptyState
+        title="Analyze the PCAP first"
+        description="Network flows are generated during PCAP analysis."
+      />
+    );
+  }
+
+
+  return (
+    <div className="space-y-6">
+
+      <div className="flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800 dark:bg-zinc-900">
+
+        <div>
+          <h2 className="text-base font-semibold text-zinc-950 dark:text-white">
+            Network Flows
+          </h2>
+
+          <p className="mt-1 text-sm text-zinc-500">
+            Aggregated source-to-destination communication.
+          </p>
+        </div>
+
+        <select
+          value={protocol}
+          onChange={(event) => {
+            setProtocol(
+              event.target.value
+            );
+            setPage(0);
+          }}
+          className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-800 outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+        >
+
+          <option value="ALL">
+            All Protocols
+          </option>
+
+          <option value="TCP">
+            TCP
+          </option>
+
+          <option value="UDP">
+            UDP
+          </option>
+
+          <option value="ICMP">
+            ICMP
+          </option>
+
+          <option value="OTHER">
+            Other
+          </option>
+
+        </select>
+
+      </div>
+
+
+      <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+
+        {loading ? (
+          <div className="p-10 text-center text-sm text-zinc-500">
+            Loading network flows...
+          </div>
+        ) : error ? (
+          <div className="p-10 text-center text-sm text-red-600">
+            {error}
+          </div>
+        ) : (
+          <>
+
+            <div className="overflow-x-auto">
+
+              <table className="w-full min-w-[1000px] text-left">
+
+                <thead className="bg-zinc-50 dark:bg-zinc-950">
+
+                  <tr className="border-b border-zinc-200 dark:border-zinc-800">
+
+                    {[
+                      "Source",
+                      "Destination",
+                      "Protocol",
+                      "Ports",
+                      "Packets",
+                      "Bytes",
+                      "First Seen",
+                      "Last Seen",
+                    ].map(
+                      (heading) => (
+                        <th
+                          key={heading}
+                          className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400"
+                        >
+                          {heading}
+                        </th>
+                      )
+                    )}
+
+                  </tr>
+
+                </thead>
+
+
+                <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+
+                  {flows.map(
+                    (flow) => (
+                      <tr
+                        key={flow.id}
+                        className="transition hover:bg-zinc-50 dark:hover:bg-zinc-950"
+                      >
+
+                        <td className="px-5 py-4 font-mono text-xs text-zinc-800 dark:text-zinc-200">
+                          {flow.source_ip}
+                        </td>
+
+                        <td className="px-5 py-4 font-mono text-xs text-zinc-800 dark:text-zinc-200">
+                          {flow.destination_ip}
+                        </td>
+
+                        <td className="px-5 py-4">
+
+                          <span className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                            {flow.protocol}
+                          </span>
+
+                        </td>
+
+                        <td className="px-5 py-4 font-mono text-[11px] text-zinc-500">
+                          {flow.source_port ??
+                            "—"}
+                          {" → "}
+                          {flow.destination_port ??
+                            "—"}
+                        </td>
+
+                        <td className="px-5 py-4 text-xs tabular-nums">
+                          {formatNumber(
+                            flow.packets
+                          )}
+                        </td>
+
+                        <td className="px-5 py-4 text-xs tabular-nums">
+                          {formatBytes(
+                            flow.bytes
+                          )}
+                        </td>
+
+                        <td className="whitespace-nowrap px-5 py-4 text-[11px] text-zinc-500">
+                          {formatTimestamp(
+                            flow.first_seen
+                          )}
+                        </td>
+
+                        <td className="whitespace-nowrap px-5 py-4 text-[11px] text-zinc-500">
+                          {formatTimestamp(
+                            flow.last_seen
+                          )}
+                        </td>
+
+                      </tr>
+                    )
+                  )}
+
+                </tbody>
+
+              </table>
+
+            </div>
+
+
+            <div className="flex items-center justify-between border-t border-zinc-200 px-5 py-4 dark:border-zinc-800">
+
+              <p className="text-xs text-zinc-500">
+                Page{" "}
+                {page + 1}
+                {" · "}
+                {flows.length} flows shown
+              </p>
+
+              <div className="flex gap-2">
+
+                <button
+                  type="button"
+                  disabled={
+                    page === 0 ||
+                    loading
+                  }
+                  onClick={() =>
+                    setPage(
+                      (value) =>
+                        Math.max(
+                          0,
+                          value - 1
+                        )
+                    )
+                  }
+                  className="rounded-lg border border-zinc-200 px-3 py-2 text-xs font-medium disabled:opacity-40 dark:border-zinc-700"
+                >
+                  Previous
+                </button>
+
+                <button
+                  type="button"
+                  disabled={
+                    flows.length <
+                      pageSize ||
+                    loading
+                  }
+                  onClick={() =>
+                    setPage(
+                      (value) =>
+                        value + 1
+                    )
+                  }
+                  className="rounded-lg border border-zinc-200 px-3 py-2 text-xs font-medium disabled:opacity-40 dark:border-zinc-700"
+                >
+                  Next
+                </button>
+
+              </div>
+
+            </div>
+
+          </>
+        )}
+
+      </div>
+
+    </div>
+  );
+}
+
+
+/* =========================================================
+   TOPOLOGY HELPERS
+========================================================= */
+
+function buildTopologyPositions(
+  nodes: NetworkTopology["nodes"],
+  width: number,
+  height: number
+): Map<string, TopologyPosition> {
+  const positions =
+    new Map<
+      string,
+      TopologyPosition
+    >();
+
+  const internal =
+    nodes.filter(
+      (node) =>
+        classifyNode(node) ===
+        "internal"
+    );
+
+  const infrastructure =
+    nodes.filter(
+      (node) =>
+        classifyNode(node) ===
+        "infrastructure"
+    );
+
+  const external =
+    nodes.filter(
+      (node) =>
+        classifyNode(node) ===
+        "external"
+    );
+
+
+  function distribute(
+    list: NetworkTopology["nodes"],
+    x: number
+  ) {
+    if (list.length === 0) {
+      return;
+    }
+
+    const top =
+      150;
+
+    const bottom =
+      height - 90;
+
+    const usableHeight =
+      bottom - top;
+
+    list.forEach(
+      (node, index) => {
+        const y =
+          list.length === 1
+            ? height / 2
+            : top +
+              (usableHeight *
+                index) /
+                (list.length - 1);
+
+        positions.set(
+          node.id,
+          {
+            x,
+            y,
+          }
+        );
+      }
+    );
+  }
+
+
+  distribute(
+    internal,
+    170
+  );
+
+  distribute(
+    infrastructure,
+    width / 2
+  );
+
+  distribute(
+    external,
+    width - 170
+  );
+
+
+  return positions;
+}
+
+
+function getCurvePath(
+  source: TopologyPosition,
+  target: TopologyPosition
+): string {
+  const distance =
+    Math.abs(
+      target.x -
+        source.x
+    );
+
+  const controlOffset =
+    Math.max(
+      80,
+      distance * 0.38
+    );
+
+  const direction =
+    target.x >= source.x
+      ? 1
+      : -1;
+
+  const c1x =
+    source.x +
+    controlOffset *
+      direction;
+
+  const c2x =
+    target.x -
+    controlOffset *
+      direction;
+
+  return [
+    `M ${source.x} ${source.y}`,
+    `C ${c1x} ${source.y}`,
+    `${c2x} ${target.y}`,
+    `${target.x} ${target.y}`,
+  ].join(" ");
+}
+
+
+/* =========================================================
+   TOPOLOGY TAB
+========================================================= */
+
+function TopologyTab({
+  caseId,
+  evidenceId,
+  analysis,
+}: {
+  caseId: string;
+  evidenceId: string;
+  analysis: PcapAnalysis | null;
+}) {
+  const [topology, setTopology] =
+    useState<NetworkTopology | null>(
+      null
+    );
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [error, setError] =
+    useState<string | null>(null);
+
+  const [search, setSearch] =
+    useState("");
+
+  const [selectedNode, setSelectedNode] =
+    useState<string | null>(null);
+
+
+  async function loadTopology() {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const data =
+        await getNetworkTopology(
+          caseId,
+          evidenceId
+        );
+
+      setTopology(data);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load topology"
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+
+  useEffect(() => {
+    void loadTopology();
+  }, [
+    caseId,
+    evidenceId,
+  ]);
+
+
+  if (!analysis) {
+    return (
+      <EmptyState
+        title="Analyze the PCAP first"
+        description="The network topology is generated from analyzed network flows."
+      />
+    );
+  }
+
+
+  if (loading) {
+    return (
+      <div className="rounded-2xl border border-zinc-200 bg-white p-12 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
+        Loading network topology...
+      </div>
+    );
+  }
+
+
+  if (error) {
+    return (
+      <div className="rounded-2xl border border-red-200 bg-red-50 p-8 text-center dark:border-red-900 dark:bg-red-950/20">
+
+        <p className="text-sm font-medium text-red-700 dark:text-red-400">
+          Unable to load topology
+        </p>
+
+        <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+          {error}
+        </p>
+
+        <button
+          type="button"
+          onClick={() =>
+            void loadTopology()
+          }
+          className="mt-5 inline-flex items-center gap-2 rounded-lg bg-zinc-950 px-3 py-2 text-xs font-medium text-white dark:bg-white dark:text-zinc-950"
+        >
+          <Icon
+            name="refresh"
+            size={14}
+          />
+
+          Retry
+        </button>
+
+      </div>
+    );
+  }
+
+
+  if (!topology) {
+    return (
+      <EmptyState
+        title="No topology available"
+        description="No communication topology was generated for this evidence."
+      />
+    );
+  }
+
+
+  /*
+   * SEARCH
+   */
+
+  const query =
+    search
+      .trim()
+      .toLowerCase();
+
+
+  const matchingNodeIds =
+    new Set(
+      topology.nodes
+        .filter((node) => {
+          if (!query) {
+            return true;
+          }
+
+          return (
+            node.id
+              .toLowerCase()
+              .includes(query) ||
+            node.label
+              .toLowerCase()
+              .includes(query)
+          );
+        })
+        .map(
+          (node) =>
+            node.id
+        )
+    );
+
+
+  /*
+   * SELECT IMPORTANT NODES
+   *
+   * The backend can contain many nodes.
+   * We keep the graph readable by showing
+   * the most active nodes.
+   */
+
+  let candidateNodes =
+    [...topology.nodes]
+      .sort(
+        (a, b) =>
+          b.bytes -
+          a.bytes
+      );
+
+
+  if (query) {
+    candidateNodes =
+      candidateNodes.filter(
+        (node) =>
+          matchingNodeIds.has(
+            node.id
+          )
+      );
+  }
+
+
+  const maxVisibleNodes =
+    24;
+
+
+  const visibleNodes =
+    candidateNodes.slice(
+      0,
+      maxVisibleNodes
+    );
+
+
+  /*
+   * If a node is selected, keep it visible.
+   */
+
+  if (
+    selectedNode &&
+    !visibleNodes.some(
+      (node) =>
+        node.id ===
+        selectedNode
+    )
+  ) {
+    const selected =
+      topology.nodes.find(
+        (node) =>
+          node.id ===
+          selectedNode
+      );
+
+    if (selected) {
+      visibleNodes.pop();
+      visibleNodes.push(
+        selected
+      );
+    }
+  }
+
+
+  const visibleNodeIds =
+    new Set(
+      visibleNodes.map(
+        (node) =>
+          node.id
+      )
+    );
+
+
+  /*
+   * EDGES
+   */
+
+  let visibleEdges =
+    topology.edges.filter(
+      (edge) =>
+        visibleNodeIds.has(
+          edge.source
+        ) &&
+        visibleNodeIds.has(
+          edge.target
+        )
+    );
+
+
+  /*
+   * When a node is selected,
+   * emphasize its connections.
+   */
+
+  const selectedEdges =
+    selectedNode
+      ? visibleEdges.filter(
+          (edge) =>
+            edge.source ===
+              selectedNode ||
+            edge.target ===
+              selectedNode
+        )
+      : [];
+
+
+  /*
+   * SVG CANVAS
+   */
+
+  const width =
+    1240;
+
+  const height =
+    700;
+
+
+  const positions =
+    buildTopologyPositions(
+      visibleNodes,
+      width,
+      height
+    );
+
+
+  /*
+   * TRAFFIC SCALE
+   */
+
+  const maxNodeBytes =
+    Math.max(
+      ...visibleNodes.map(
+        (node) =>
+          node.bytes
+      ),
+      1
+    );
+
+
+  const maxEdgeBytes =
+    Math.max(
+      ...visibleEdges.map(
+        (edge) =>
+          edge.bytes
+      ),
+      1
+    );
+
+
+  /*
+   * ZONE COUNTS
+   */
+
+  const internalCount =
+    visibleNodes.filter(
+      (node) =>
+        classifyNode(node) ===
+        "internal"
+    ).length;
+
+  const infrastructureCount =
+    visibleNodes.filter(
+      (node) =>
+        classifyNode(node) ===
+        "infrastructure"
+    ).length;
+
+  const externalCount =
+    visibleNodes.filter(
+      (node) =>
+        classifyNode(node) ===
+        "external"
+    ).length;
+
+
+  /*
+   * SELECTED NODE
+   */
+
+  const selectedNodeData =
+    selectedNode
+      ? topology.nodes.find(
+          (node) =>
+            node.id ===
+            selectedNode
+        ) ?? null
+      : null;
+
+
+  return (
+    <div className="space-y-6">
+
+      {/* =================================================
+          HEADER
+      ================================================= */}
+
+      <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+
+          <div>
+
+            <div className="flex items-center gap-3">
+
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-950 text-white dark:bg-white dark:text-zinc-950">
+                <Icon
+                  name="topology"
+                  size={18}
+                />
+              </div>
+
+              <div>
+
+                <h2 className="text-base font-semibold text-zinc-950 dark:text-white">
+                  Network Communication Map
+                </h2>
+
+                <p className="mt-1 text-sm text-zinc-500">
+                  Directional communication between observed network systems.
+                </p>
+
+              </div>
+
+            </div>
+
+          </div>
+
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+
+            <div className="relative">
+
+              <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400">
+                <Icon
+                  name="search"
+                  size={15}
+                />
+              </div>
+
+              <input
+                value={search}
+                onChange={(event) => {
+                  setSearch(
+                    event.target.value
+                  );
+                  setSelectedNode(
+                    null
+                  );
+                }}
+                placeholder="Search IP or host..."
+                className="w-full rounded-xl border border-zinc-200 bg-zinc-50 py-2.5 pl-9 pr-3 text-xs outline-none transition focus:border-zinc-400 sm:w-64 dark:border-zinc-700 dark:bg-zinc-950 dark:text-white"
+              />
+
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                void loadTopology()
+              }
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-2.5 text-xs font-medium text-zinc-700 transition hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            >
+
+              <Icon
+                name="refresh"
+                size={15}
+              />
+
+              Refresh
+
+            </button>
+
+          </div>
+
+        </div>
+
+      </div>
+
+
+      {/* =================================================
+          TOPOLOGY SUMMARY
+      ================================================= */}
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+
+        <StatCard
+          label="Total Nodes"
+          value={formatNumber(
+            topology.node_count
+          )}
+          description="All hosts in topology"
+          icon={
+            <Icon
+              name="server"
+              size={17}
+            />
+          }
+        />
+
+        <StatCard
+          label="Connections"
+          value={formatNumber(
+            topology.edge_count
+          )}
+          description="Aggregated communication paths"
+          icon={
+            <Icon
+              name="network"
+              size={17}
+            />
+          }
+        />
+
+        <StatCard
+          label="Internal"
+          value={internalCount}
+          description="Private network systems"
+        />
+
+        <StatCard
+          label="Infrastructure"
+          value={infrastructureCount}
+          description="DNS / infrastructure nodes"
+        />
+
+        <StatCard
+          label="External"
+          value={externalCount}
+          description="Public network systems"
+        />
+
+      </div>
+
+
+      {/* =================================================
+          LEGEND
+      ================================================= */}
+
+      <div className="rounded-2xl border border-zinc-200 bg-white px-5 py-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+
+          <div className="flex items-center gap-2">
+
+            <span className="h-3.5 w-3.5 rounded-full border-2 border-zinc-950 bg-white dark:border-white dark:bg-zinc-950" />
+
+            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
+              Internal Host
+            </span>
+
+          </div>
+
+
+          <div className="flex items-center gap-2">
+
+            <span className="h-3.5 w-3.5 rounded-full border-2 border-zinc-500 bg-zinc-200 dark:border-zinc-400 dark:bg-zinc-700" />
+
+            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
+              DNS / Infrastructure
+            </span>
+
+          </div>
+
+
+          <div className="flex items-center gap-2">
+
+            <span className="h-3.5 w-3.5 rounded-full border-2 border-zinc-950 bg-zinc-950 dark:border-white dark:bg-white" />
+
+            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
+              External Host
+            </span>
+
+          </div>
+
+
+          <div className="ml-auto flex items-center gap-2">
+
+            <span className="text-[11px] text-zinc-400">
+              Larger node
+            </span>
+
+            <span className="h-3 w-3 rounded-full bg-zinc-400" />
+
+            <span className="text-[11px] text-zinc-400">
+              = more traffic
+            </span>
+
+          </div>
+
+        </div>
+
+      </div>
+
+
+      {/* =================================================
+          MAIN TOPOLOGY
+      ================================================= */}
+
+      <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+
+        <div className="border-b border-zinc-200 px-6 py-5 dark:border-zinc-800">
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+
+            <div>
+
+              <h3 className="text-sm font-semibold text-zinc-950 dark:text-white">
+                Communication Flow
+              </h3>
+
+              <p className="mt-1 text-xs text-zinc-500">
+                Internal systems are placed on the left and external systems on the right.
+              </p>
+
+            </div>
+
+            <div className="text-xs text-zinc-400">
+              Showing{" "}
+              <span className="font-semibold text-zinc-700 dark:text-zinc-200">
+                {visibleNodes.length}
+              </span>{" "}
+              of{" "}
+              <span className="font-semibold text-zinc-700 dark:text-zinc-200">
+                {topology.node_count}
+              </span>{" "}
+              nodes
+            </div>
+
+          </div>
+
+        </div>
+
+
+        <div className="overflow-x-auto bg-zinc-50 dark:bg-zinc-950">
+
+          <svg
+            viewBox={`0 0 ${width} ${height}`}
+            className="min-w-[1100px] w-full"
+          >
+
+            {/* =================================================
+                ARROW MARKER
+            ================================================= */}
+
+            <defs>
+
+              <marker
+                id="netforensicx-arrow"
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto-start-reverse"
+              >
+                <path
+                  d="M 0 0 L 10 5 L 0 10 z"
+                  className="fill-zinc-400 dark:fill-zinc-500"
+                />
+              </marker>
+
+            </defs>
+
+
+            {/* =================================================
+                ZONE BACKGROUNDS
+            ================================================= */}
+
+            <rect
+              x="35"
+              y="70"
+              width="350"
+              height="570"
+              rx="22"
+              className="fill-white stroke-zinc-200 dark:fill-zinc-950 dark:stroke-zinc-800"
+            />
+
+            <rect
+              x="445"
+              y="70"
+              width="350"
+              height="570"
+              rx="22"
+              className="fill-white stroke-zinc-200 dark:fill-zinc-950 dark:stroke-zinc-800"
+            />
+
+            <rect
+              x="855"
+              y="70"
+              width="350"
+              height="570"
+              rx="22"
+              className="fill-white stroke-zinc-200 dark:fill-zinc-950 dark:stroke-zinc-800"
+            />
+
+
+            {/* =================================================
+                ZONE HEADERS
+            ================================================= */}
+
+            <text
+              x="210"
+              y="105"
+              textAnchor="middle"
+              className="fill-zinc-900 text-[14px] font-semibold dark:fill-white"
+            >
+              INTERNAL NETWORK
+            </text>
+
+            <text
+              x="620"
+              y="105"
+              textAnchor="middle"
+              className="fill-zinc-900 text-[14px] font-semibold dark:fill-white"
+            >
+              INFRASTRUCTURE / DNS
+            </text>
+
+            <text
+              x="1030"
+              y="105"
+              textAnchor="middle"
+              className="fill-zinc-900 text-[14px] font-semibold dark:fill-white"
+            >
+              EXTERNAL NETWORK
+            </text>
+
+
+            <text
+              x="210"
+              y="125"
+              textAnchor="middle"
+              className="fill-zinc-400 text-[10px] dark:fill-zinc-500"
+            >
+              Private / local systems
+            </text>
+
+            <text
+              x="620"
+              y="125"
+              textAnchor="middle"
+              className="fill-zinc-400 text-[10px] dark:fill-zinc-500"
+            >
+              DNS and infrastructure
+            </text>
+
+            <text
+              x="1030"
+              y="125"
+              textAnchor="middle"
+              className="fill-zinc-400 text-[10px] dark:fill-zinc-500"
+            >
+              Public / Internet systems
+            </text>
+
+
+            {/* =================================================
+                CONNECTIONS
+            ================================================= */}
+
+            {visibleEdges.map(
+              (edge) => {
+                const source =
+                  positions.get(
+                    edge.source
+                  );
+
+                const target =
+                  positions.get(
+                    edge.target
+                  );
+
+                if (
+                  !source ||
+                  !target
+                ) {
+                  return null;
+                }
+
+                const selected =
+                  selectedNode !==
+                    null &&
+                  (
+                    edge.source ===
+                      selectedNode ||
+                    edge.target ===
+                      selectedNode
+                  );
+
+                const dimmed =
+                  selectedNode !==
+                    null &&
+                  !selected;
+
+                const strokeWidth =
+                  1.5 +
+                  Math.min(
+                    5,
+                    (edge.bytes /
+                      maxEdgeBytes) *
+                      5
+                  );
+
+                const path =
+                  getCurvePath(
+                    source,
+                    target
+                  );
+
+                const midX =
+                  (source.x +
+                    target.x) /
+                  2;
+
+                const midY =
+                  (source.y +
+                    target.y) /
+                  2;
+
+                const protocol =
+                  getProtocolLabel(
+                    edge
+                  );
+
+                const port =
+                  getEdgePortLabel(
+                    edge
+                  );
+
+                return (
+                  <g
+                    key={edge.id}
+                    className={
+                      dimmed
+                        ? "opacity-20"
+                        : "opacity-100"
+                    }
+                  >
+
+                    <path
+                      d={path}
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={
+                        selected
+                          ? strokeWidth +
+                            1.5
+                          : strokeWidth
+                      }
+                      strokeLinecap="round"
+                      markerEnd="url(#netforensicx-arrow)"
+                      className={
+                        selected
+                          ? "text-zinc-950 dark:text-white"
+                          : "text-zinc-300 dark:text-zinc-700"
+                      }
+                    />
+
+
+                    {/* EDGE LABEL */}
+
+                    {!dimmed && (
+                      <g
+                        transform={`translate(${midX}, ${midY})`}
+                      >
+
+                        <rect
+                          x="-58"
+                          y="-16"
+                          width="116"
+                          height="32"
+                          rx="8"
+                          className="fill-white stroke-zinc-200 dark:fill-zinc-900 dark:stroke-zinc-700"
+                        />
+
+                        <text
+                          x="0"
+                          y="-2"
+                          textAnchor="middle"
+                          className="fill-zinc-700 text-[9px] font-semibold dark:fill-zinc-200"
+                        >
+                          {protocol}
+                          {port}
+                        </text>
+
+                        <text
+                          x="0"
+                          y="9"
+                          textAnchor="middle"
+                          className="fill-zinc-400 text-[8px] dark:fill-zinc-500"
+                        >
+                          {formatBytes(
+                            edge.bytes
+                          )}
+                          {" · "}
+                          {formatNumber(
+                            edge.packets
+                          )}{" "}
+                          packets
+                        </text>
+
+                      </g>
+                    )}
+
+                  </g>
+                );
+              }
+            )}
+
+
+            {/* =================================================
+                NODES
+            ================================================= */}
+
+            {visibleNodes.map(
+              (node) => {
+                const position =
+                  positions.get(
+                    node.id
+                  );
+
+                if (!position) {
+                  return null;
+                }
+
+                const zone =
+                  classifyNode(
+                    node
+                  );
+
+                const selected =
+                  selectedNode ===
+                  node.id;
+
+                const dimmed =
+                  selectedNode !==
+                    null &&
+                  !selected &&
+                  !visibleEdges.some(
+                    (edge) =>
+                      (
+                        edge.source ===
+                          selectedNode &&
+                        edge.target ===
+                          node.id
+                      ) ||
+                      (
+                        edge.target ===
+                          selectedNode &&
+                        edge.source ===
+                          node.id
+                      )
+                  );
+
+                const trafficRatio =
+                  node.bytes /
+                  maxNodeBytes;
+
+                const radius =
+                  18 +
+                  Math.min(
+                    15,
+                    trafficRatio *
+                      15
+                  );
+
+
+                const fillClass =
+                  zone ===
+                  "internal"
+                    ? "fill-white dark:fill-zinc-950"
+                    : zone ===
+                        "infrastructure"
+                      ? "fill-zinc-200 dark:fill-zinc-700"
+                      : "fill-zinc-950 dark:fill-white";
+
+
+                const strokeClass =
+                  zone ===
+                  "external"
+                    ? "stroke-zinc-950 dark:stroke-white"
+                    : "stroke-zinc-900 dark:stroke-white";
+
+
+                const textClass =
+                  zone ===
+                  "external"
+                    ? "fill-white dark:fill-zinc-950"
+                    : "fill-zinc-950 dark:fill-white";
+
+
+                const shortLabel =
+                  zone ===
+                  "internal"
+                    ? "HOST"
+                    : zone ===
+                        "infrastructure"
+                      ? "DNS"
+                      : "EXT";
+
+
+                return (
+                  <g
+                    key={node.id}
+                    onClick={() =>
+                      setSelectedNode(
+                        selected
+                          ? null
+                          : node.id
+                      )
+                    }
+                    className={`cursor-pointer transition ${
+                      dimmed
+                        ? "opacity-35"
+                        : "opacity-100"
+                    }`}
+                  >
+
+                    {/* OUTER GLOW */}
+
+                    <circle
+                      cx={
+                        position.x
+                      }
+                      cy={
+                        position.y
+                      }
+                      r={
+                        radius +
+                        (selected
+                          ? 10
+                          : 6)
+                      }
+                      className={
+                        selected
+                          ? "fill-zinc-200 dark:fill-zinc-800"
+                          : "fill-zinc-100 dark:fill-zinc-900"
+                      }
+                    />
+
+
+                    {/* NODE */}
+
+                    <circle
+                      cx={
+                        position.x
+                      }
+                      cy={
+                        position.y
+                      }
+                      r={radius}
+                      className={`${fillClass} ${strokeClass}`}
+                      strokeWidth={
+                        selected
+                          ? 3
+                          : 2
+                      }
+                    />
+
+
+                    {/* TYPE */}
+
+                    <text
+                      x={
+                        position.x
+                      }
+                      y={
+                        position.y +
+                        4
+                      }
+                      textAnchor="middle"
+                      className={`${textClass} text-[9px] font-bold`}
+                    >
+                      {shortLabel}
+                    </text>
+
+
+                    {/* IP LABEL */}
+
+                    <rect
+                      x={
+                        position.x -
+                        82
+                      }
+                      y={
+                        position.y +
+                        radius +
+                        10
+                      }
+                      width="164"
+                      height="26"
+                      rx="7"
+                      className="fill-white stroke-zinc-200 dark:fill-zinc-900 dark:stroke-zinc-700"
+                    />
+
+                    <text
+                      x={
+                        position.x
+                      }
+                      y={
+                        position.y +
+                        radius +
+                        27
+                      }
+                      textAnchor="middle"
+                      className="fill-zinc-900 text-[10px] font-semibold dark:fill-white"
+                    >
+                      {node.label}
+                    </text>
+
+
+                    {/* TRAFFIC */}
+
+                    <text
+                      x={
+                        position.x
+                      }
+                      y={
+                        position.y +
+                        radius +
+                        49
+                      }
+                      textAnchor="middle"
+                      className="fill-zinc-400 text-[8px] dark:fill-zinc-500"
+                    >
+                      {formatBytes(
+                        node.bytes
+                      )}
+                      {" · "}
+                      {formatNumber(
+                        node.packets
+                      )}{" "}
+                      packets
+                    </text>
+
+                  </g>
+                );
+              }
+            )}
+
+          </svg>
+
+        </div>
+
+
+        {/* =================================================
+            SELECTED NODE DETAILS
+        ================================================= */}
+
+        {selectedNodeData && (
+          <div className="border-t border-zinc-200 bg-zinc-50 px-6 py-5 dark:border-zinc-800 dark:bg-zinc-950">
+
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+
+              <div>
+
+                <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
+                  Selected Host
+                </p>
+
+                <p className="mt-1 font-mono text-sm font-semibold text-zinc-950 dark:text-white">
+                  {selectedNodeData.label}
+                </p>
+
+                <p className="mt-1 text-xs text-zinc-500">
+                  {classifyNode(
+                    selectedNodeData
+                  ) ===
+                  "internal"
+                    ? "Internal network system"
+                    : classifyNode(
+                          selectedNodeData
+                        ) ===
+                        "infrastructure"
+                      ? "DNS / infrastructure system"
+                      : "External network system"}
+                </p>
+
+              </div>
+
+
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+
+                <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
+
+                  <p className="text-[9px] uppercase tracking-wider text-zinc-400">
+                    Packets
+                  </p>
+
+                  <p className="mt-1 text-sm font-semibold text-zinc-900 dark:text-white">
+                    {formatNumber(
+                      selectedNodeData.packets
+                    )}
+                  </p>
+
+                </div>
+
+
+                <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
+
+                  <p className="text-[9px] uppercase tracking-wider text-zinc-400">
+                    Traffic
+                  </p>
+
+                  <p className="mt-1 text-sm font-semibold text-zinc-900 dark:text-white">
+                    {formatBytes(
+                      selectedNodeData.bytes
+                    )}
+                  </p>
+
+                </div>
+
+
+                <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
+
+                  <p className="text-[9px] uppercase tracking-wider text-zinc-400">
+                    Connections
+                  </p>
+
+                  <p className="mt-1 text-sm font-semibold text-zinc-900 dark:text-white">
+                    {
+                      visibleEdges.filter(
+                        (edge) =>
+                          edge.source ===
+                            selectedNode ||
+                          edge.target ===
+                            selectedNode
+                      ).length
+                    }
+                  </p>
+
+                </div>
+
+
+                <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
+
+                  <p className="text-[9px] uppercase tracking-wider text-zinc-400">
+                    Zone
+                  </p>
+
+                  <p className="mt-1 text-sm font-semibold capitalize text-zinc-900 dark:text-white">
+                    {classifyNode(
+                      selectedNodeData
+                    )}
+                  </p>
+
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+        )}
+
+      </div>
+
+
+      {/* =================================================
+          TOPOLOGY EXPLANATION
+      ================================================= */}
+
+      <div className="grid gap-4 lg:grid-cols-3">
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+
+          <div className="flex items-center gap-3">
+
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+              <Icon
+                name="server"
+                size={16}
+              />
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-zinc-900 dark:text-white">
+                Internal Systems
+              </p>
+
+              <p className="text-[11px] text-zinc-500">
+                Private IP space
+              </p>
+            </div>
+
+          </div>
+
+          <p className="mt-4 text-xs leading-5 text-zinc-500">
+            These are systems observed inside the private network,
+            such as workstations, servers, or other internal hosts.
+          </p>
+
+        </div>
+
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+
+          <div className="flex items-center gap-3">
+
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+              <Icon
+                name="network"
+                size={16}
+              />
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-zinc-900 dark:text-white">
+                Infrastructure
+              </p>
+
+              <p className="text-[11px] text-zinc-500">
+                DNS / supporting services
+              </p>
+            </div>
+
+          </div>
+
+          <p className="mt-4 text-xs leading-5 text-zinc-500">
+            Infrastructure nodes provide services such as DNS or
+            other network-level communication.
+          </p>
+
+        </div>
+
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+
+          <div className="flex items-center gap-3">
+
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-950 text-white dark:bg-white dark:text-zinc-950">
+              <Icon
+                name="topology"
+                size={16}
+              />
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-zinc-900 dark:text-white">
+                External Systems
+              </p>
+
+              <p className="text-[11px] text-zinc-500">
+                Public / Internet hosts
+              </p>
+            </div>
+
+          </div>
+
+          <p className="mt-4 text-xs leading-5 text-zinc-500">
+            Public IP addresses observed communicating with the
+            internal environment.
+          </p>
+
+        </div>
+
+      </div>
+
+
+      {/* =================================================
+          TOP CONNECTIONS
+      ================================================= */}
+
+      <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+
+        <div className="border-b border-zinc-200 p-6 dark:border-zinc-800">
+
+          <div className="flex items-center justify-between">
+
+            <div>
+              <h3 className="text-sm font-semibold text-zinc-950 dark:text-white">
+                Top Communication Paths
+              </h3>
+
+              <p className="mt-1 text-xs text-zinc-500">
+                Highest-volume connections in the analyzed topology.
+              </p>
+            </div>
+
+            {selectedNode && (
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedNode(
+                    null
+                  )
+                }
+                className="rounded-lg border border-zinc-200 px-3 py-2 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                Clear selection
+              </button>
+            )}
+
+          </div>
+
+        </div>
+
+
+        <div className="overflow-x-auto">
+
+          <table className="w-full min-w-[850px] text-left">
+
+            <thead className="bg-zinc-50 dark:bg-zinc-950">
+
+              <tr className="border-b border-zinc-200 dark:border-zinc-800">
+
+                <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                  Source
+                </th>
+
+                <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                  Direction
+                </th>
+
+                <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                  Destination
+                </th>
+
+                <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                  Protocol
+                </th>
+
+                <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                  Packets
+                </th>
+
+                <th className="px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                  Traffic
+                </th>
+
+              </tr>
+
+            </thead>
+
+
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+
+              {visibleEdges
+                .slice()
+                .sort(
+                  (a, b) =>
+                    b.bytes -
+                    a.bytes
+                )
+                .slice(0, 15)
+                .map(
+                  (edge) => {
+                    const source =
+                      topology.nodes.find(
+                        (node) =>
+                          node.id ===
+                          edge.source
+                      );
+
+                    const target =
+                      topology.nodes.find(
+                        (node) =>
+                          node.id ===
+                          edge.target
+                      );
+
+                    const selected =
+                      selectedNode ===
+                        edge.source ||
+                      selectedNode ===
+                        edge.target;
+
+                    return (
+                      <tr
+                        key={edge.id}
+                        onClick={() => {
+                          setSelectedNode(
+                            edge.source
+                          );
+                        }}
+                        className={`cursor-pointer transition hover:bg-zinc-50 dark:hover:bg-zinc-950 ${
+                          selected
+                            ? "bg-zinc-50 dark:bg-zinc-950"
+                            : ""
+                        }`}
+                      >
+
+                        <td className="px-6 py-4">
+
+                          <div className="flex items-center gap-2">
+
+                            <span
+                              className={`h-2.5 w-2.5 rounded-full ${
+                                source &&
+                                classifyNode(
+                                  source
+                                ) ===
+                                  "internal"
+                                  ? "border border-zinc-950 bg-white dark:border-white dark:bg-zinc-950"
+                                  : "bg-zinc-950 dark:bg-white"
+                              }`}
+                            />
+
+                            <span className="font-mono text-xs text-zinc-900 dark:text-white">
+                              {edge.source}
+                            </span>
+
+                          </div>
+
+                        </td>
+
+
+                        <td className="px-6 py-4">
+
+                          <div className="flex items-center gap-2 text-zinc-400">
+
+                            <span className="h-px w-8 bg-zinc-300 dark:bg-zinc-700" />
+
+                            <span className="text-xs">
+                              →
+                            </span>
+
+                          </div>
+
+                        </td>
+
+
+                        <td className="px-6 py-4">
+
+                          <div className="flex items-center gap-2">
+
+                            <span
+                              className={`h-2.5 w-2.5 rounded-full ${
+                                target &&
+                                classifyNode(
+                                  target
+                                ) ===
+                                  "external"
+                                  ? "bg-zinc-950 dark:bg-white"
+                                  : "border border-zinc-500 bg-zinc-200 dark:bg-zinc-700"
+                              }`}
+                            />
+
+                            <span className="font-mono text-xs text-zinc-900 dark:text-white">
+                              {edge.target}
+                            </span>
+
+                          </div>
+
+                        </td>
+
+
+                        <td className="px-6 py-4">
+
+                          <span className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                            {getProtocolLabel(
+                              edge
+                            )}
+                            {getEdgePortLabel(
+                              edge
+                            )}
+                          </span>
+
+                        </td>
+
+
+                        <td className="px-6 py-4 text-xs tabular-nums text-zinc-600 dark:text-zinc-300">
+                          {formatNumber(
+                            edge.packets
+                          )}
+                        </td>
+
+
+                        <td className="px-6 py-4 text-xs font-medium tabular-nums text-zinc-900 dark:text-white">
+                          {formatBytes(
+                            edge.bytes
+                          )}
+                        </td>
+
+                      </tr>
+                    );
+                  }
+                )}
+
+            </tbody>
+
+          </table>
+
+        </div>
+
+      </div>
+
+
+      {/* =================================================
+          SELECTED CONNECTION SUMMARY
+      ================================================= */}
+
+      {selectedNode &&
+        selectedEdges.length > 0 && (
+          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+
+            <div className="flex items-center justify-between">
+
+              <div>
+
+                <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
+                  Investigation Focus
+                </p>
+
+                <h3 className="mt-1 font-mono text-sm font-semibold text-zinc-950 dark:text-white">
+                  {selectedNode}
+                </h3>
+
+              </div>
+
+              <span className="rounded-full bg-zinc-100 px-3 py-1.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                {selectedEdges.length} related connections
+              </span>
+
+            </div>
+
+            <div className="mt-5 grid gap-3">
+
+              {selectedEdges
+                .slice(0, 8)
+                .map(
+                  (edge) => (
+                    <div
+                      key={edge.id}
+                      className="flex flex-col gap-3 rounded-xl border border-zinc-200 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800"
+                    >
+
+                      <div className="flex items-center gap-3">
+
+                        <span className="font-mono text-xs text-zinc-900 dark:text-white">
+                          {edge.source}
+                        </span>
+
+                        <span className="text-zinc-400">
+                          →
+                        </span>
+
+                        <span className="font-mono text-xs text-zinc-900 dark:text-white">
+                          {edge.target}
+                        </span>
+
+                      </div>
+
+                      <div className="flex items-center gap-3">
+
+                        <span className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                          {getProtocolLabel(
+                            edge
+                          )}
+                        </span>
+
+                        <span className="text-xs text-zinc-500">
+                          {formatNumber(
+                            edge.packets
+                          )}{" "}
+                          packets
+                        </span>
+
+                        <span className="text-xs font-medium text-zinc-900 dark:text-white">
+                          {formatBytes(
+                            edge.bytes
+                          )}
+                        </span>
+
+                      </div>
+
+                    </div>
+                  )
+                )}
+
+            </div>
+
+          </div>
+        )}
+
+    </div>
+  );
+}
+
+
+/* =========================================================
+   EMPTY STATE
+========================================================= */
+
+function EmptyState({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-dashed border-zinc-300 bg-white p-12 text-center dark:border-zinc-700 dark:bg-zinc-900">
+
+      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-zinc-100 text-zinc-500 dark:bg-zinc-800">
+        <Icon
+          name="box"
+          size={20}
+        />
+      </div>
+
+      <h3 className="mt-4 text-sm font-semibold text-zinc-900 dark:text-white">
+        {title}
+      </h3>
+
+      <p className="mx-auto mt-1 max-w-md text-xs leading-5 text-zinc-500">
+        {description}
+      </p>
+
+    </div>
+  );
+}
+
+
+/* =========================================================
+   MAIN CASE PAGE
+========================================================= */
+
+export default function CasePage() {
+  const params =
+    useParams();
+
+  const caseId =
+    typeof params.id ===
+    "string"
+      ? params.id
+      : Array.isArray(
+          params.id
+        )
+        ? params.id[0]
+        : "";
+
+
+  const [caseData, setCaseData] =
+    useState<Case | null>(null);
+
+  const [evidence, setEvidence] =
+    useState<Evidence[]>([]);
+
+  const [selectedEvidenceId, setSelectedEvidenceId] =
+    useState<string | null>(null);
+
+  const [analysisMap, setAnalysisMap] =
+    useState<
+      Record<
+        string,
+        PcapAnalysis | null
+      >
+    >({});
+
+  const [activeTab, setActiveTab] =
+    useState<TabId>(
+      "overview"
+    );
+
+  const [theme, setTheme] =
+    useState<Theme>("light");
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [error, setError] =
+    useState<string | null>(null);
+
+  const [uploading, setUploading] =
+    useState(false);
+
+  const [analyzingId, setAnalyzingId] =
+    useState<string | null>(null);
+
+
+  /* =====================================================
+     THEME
+  ===================================================== */
+
+  useEffect(() => {
+    const stored =
+      window.localStorage.getItem(
+        "netforensicx-theme"
+      ) as Theme | null;
+
+    const initialTheme =
+      stored === "dark" ||
+      stored === "light"
+        ? stored
+        : "light";
+
+    setTheme(
+      initialTheme
+    );
+
+    document.documentElement.classList.toggle(
+      "dark",
+      initialTheme === "dark"
+    );
+  }, []);
+
+
+  function toggleTheme() {
+    const nextTheme =
+      theme === "light"
+        ? "dark"
+        : "light";
+
+    setTheme(
+      nextTheme
+    );
+
+    document.documentElement.classList.toggle(
+      "dark",
+      nextTheme === "dark"
+    );
+
+    window.localStorage.setItem(
+      "netforensicx-theme",
+      nextTheme
+    );
+  }
+
+
+  /* =====================================================
+     LOAD CASE
+  ===================================================== */
+
+  useEffect(() => {
+    if (!caseId) {
+      return;
+    }
+
+    async function loadCase() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const cases =
+          await getCases();
+
+        const currentCase =
+          cases.find(
+            (item) =>
+              item.id ===
+              caseId
+          );
+
+        if (!currentCase) {
+          throw new Error(
+            "Case not found"
+          );
+        }
+
+        setCaseData(
+          currentCase
+        );
+
+        const evidenceData =
+          await getCaseEvidence(
+            caseId
+          );
+
+        setEvidence(
+          evidenceData
+        );
+
+        if (
+          evidenceData.length >
+          0
+        ) {
+          setSelectedEvidenceId(
+            evidenceData[0].id
+          );
+
+          const analyses =
+            await Promise.all(
+              evidenceData.map(
+                async (
+                  item
+                ) => {
+                  try {
+                    const result =
+                      await getEvidenceAnalysis(
+                        caseId,
+                        item.id
+                      );
+
+                    return [
+                      item.id,
+                      result,
+                    ] as const;
+                  } catch {
+                    return [
+                      item.id,
+                      null,
+                    ] as const;
+                  }
+                }
+              )
+            );
+
+          setAnalysisMap(
+            Object.fromEntries(
+              analyses
+            )
+          );
+        }
+
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Unable to load case"
+        );
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    void loadCase();
+  }, [
+    caseId,
+  ]);
+
+
+  /* =====================================================
+     ANALYZE
+  ===================================================== */
+
+  async function handleAnalyze(
+    evidenceId: string
+  ) {
+    try {
+      setAnalyzingId(
+        evidenceId
+      );
+
+      setError(null);
+
+      const result =
+        await analyzeEvidence(
+          caseId,
+          evidenceId
+        );
+
+      setAnalysisMap(
+        (current) => ({
+          ...current,
+          [evidenceId]:
+            result,
+        })
+      );
+
+      setSelectedEvidenceId(
+        evidenceId
+      );
+
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to analyze evidence"
+      );
+    } finally {
+      setAnalyzingId(
+        null
+      );
+    }
+  }
+
+
+  /* =====================================================
+     UPLOAD
+  ===================================================== */
+
+  async function handleUpload(
+    event: React.ChangeEvent<HTMLInputElement>
+  ) {
+    const file =
+      event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    try {
+      setUploading(true);
+      setError(null);
+
+      const uploaded =
+        await uploadEvidence(
+          caseId,
+          file
+        );
+
+      setEvidence(
+        (current) => [
+          uploaded,
+          ...current,
+        ]
+      );
+
+      setSelectedEvidenceId(
+        uploaded.id
+      );
+
+      setAnalysisMap(
+        (current) => ({
+          ...current,
+          [uploaded.id]:
+            null,
+        })
+      );
+
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to upload evidence"
+      );
+    } finally {
+      setUploading(
+        false
+      );
+
+      event.target.value =
+        "";
+    }
+  }
+
+
+  /* =====================================================
+     SELECTED DATA
+  ===================================================== */
+
+  const selectedEvidence =
+    evidence.find(
+      (item) =>
+        item.id ===
+        selectedEvidenceId
+    ) ?? null;
+
+
+  const selectedAnalysis =
+    selectedEvidence
+      ? analysisMap[
+          selectedEvidence.id
+        ] ?? null
+      : null;
+
+
+  /* =====================================================
+     LOADING
+  ===================================================== */
+
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-zinc-50 p-6 dark:bg-zinc-950">
+
+        <div className="mx-auto max-w-7xl">
+
+          <div className="flex min-h-[60vh] items-center justify-center">
+
+            <div className="text-center">
+
+              <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-900 dark:border-zinc-800 dark:border-t-white" />
+
+              <p className="mt-4 text-sm text-zinc-500">
+                Loading investigation...
+              </p>
+
+            </div>
+
+          </div>
+
+        </div>
+
+      </main>
+    );
+  }
+
+
+  if (!caseData) {
+    return (
+      <main className="min-h-screen bg-zinc-50 p-6 dark:bg-zinc-950">
+
+        <div className="mx-auto max-w-7xl">
+
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/20 dark:text-red-400">
+            {error ??
+              "Case not found"}
+          </div>
+
+        </div>
+
+      </main>
+    );
+  }
+
+
+  /* =====================================================
+     RENDER TAB
+  ===================================================== */
+
+  function renderTab() {
+    switch (activeTab) {
+
+      case "overview":
+        return (
+          <OverviewTab
+            evidence={
+              evidence
+            }
+            analysisMap={
+              analysisMap
+            }
+            selectedEvidence={
+              selectedEvidence
+            }
+            onSelectEvidence={(
+              id
+            ) =>
+              setSelectedEvidenceId(
+                id
+              )
+            }
+            onAnalyze={
+              handleAnalyze
+            }
+          />
+        );
+
+
+      case "evidence":
+        return (
+          <EvidenceTab
+            evidence={
+              evidence
+            }
+            selectedEvidenceId={
+              selectedEvidenceId
+            }
+            analysisMap={
+              analysisMap
+            }
+            onSelect={(
+              id
+            ) =>
+              setSelectedEvidenceId(
+                id
+              )
+            }
+            onAnalyze={
+              handleAnalyze
+            }
+            onUpload={
+              handleUpload
+            }
+            uploading={
+              uploading
+            }
+            analyzingId={
+              analyzingId
+            }
+          />
+        );
+
+
+      case "analysis":
+        return (
+          <AnalysisTab
+            analysis={
+              selectedAnalysis
+            }
+          />
+        );
+
+
+      case "hosts":
+        return selectedEvidence ? (
+          <HostsTab
+            caseId={
+              caseId
+            }
+            evidenceId={
+              selectedEvidence.id
+            }
+            analysis={
+              selectedAnalysis
+            }
+          />
+        ) : (
+          <EmptyState
+            title="No evidence selected"
+            description="Select a PCAP from the Evidence tab."
+          />
+        );
+
+
+      case "flows":
+        return selectedEvidence ? (
+          <FlowsTab
+            caseId={
+              caseId
+            }
+            evidenceId={
+              selectedEvidence.id
+            }
+            analysis={
+              selectedAnalysis
+            }
+          />
+        ) : (
+          <EmptyState
+            title="No evidence selected"
+            description="Select a PCAP from the Evidence tab."
+          />
+        );
+
+
+      case "topology":
+        return selectedEvidence ? (
+          <TopologyTab
+            caseId={
+              caseId
+            }
+            evidenceId={
+              selectedEvidence.id
+            }
+            analysis={
+              selectedAnalysis
+            }
+          />
+        ) : (
+          <EmptyState
+            title="No evidence selected"
+            description="Select a PCAP from the Evidence tab."
+          />
+        );
+
+
+      default:
+        return null;
+    }
+  }
+
+
+  /* =====================================================
+     MAIN UI
+  ===================================================== */
+
+  return (
+    <main className="min-h-screen bg-zinc-50 text-zinc-950 transition-colors dark:bg-zinc-950 dark:text-white">
+
+      {/* =================================================
+          TOP BAR
+      ================================================= */}
+
+      <header className="sticky top-0 z-40 border-b border-zinc-200/80 bg-white/90 backdrop-blur-xl dark:border-zinc-800/80 dark:bg-zinc-950/90">
+
+        <div className="mx-auto flex h-16 max-w-[1600px] items-center justify-between px-4 sm:px-6 lg:px-8">
+
+          <div className="flex items-center gap-3">
+
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-950 text-white dark:bg-white dark:text-zinc-950">
+              <Icon
+                name="shield"
+                size={16}
+              />
+            </div>
+
+            <div>
+
+              <p className="text-sm font-semibold tracking-tight">
+                NetForensicX
+              </p>
+
+              <p className="hidden text-[10px] uppercase tracking-[0.15em] text-zinc-400 sm:block">
+                Network Forensics
+              </p>
+
+            </div>
+
+          </div>
+
+
+          <ThemeToggle
+            theme={theme}
+            onToggle={
+              toggleTheme
+            }
+          />
+
+        </div>
+
+      </header>
+
+
+      {/* =================================================
+          CASE HEADER
+      ================================================= */}
+
+      <section className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+
+        <div className="mx-auto max-w-[1600px] px-4 py-7 sm:px-6 lg:px-8">
+
+          <button
+            type="button"
+            onClick={() =>
+              window.history.back()
+            }
+            className="mb-5 flex items-center gap-2 text-xs font-medium text-zinc-500 transition hover:text-zinc-900 dark:hover:text-white"
+          >
+
+            <Icon
+              name="arrow"
+              size={14}
+            />
+
+            Back to Cases
+
+          </button>
+
+
+          <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
+
+            <div>
+
+              <div className="flex flex-wrap items-center gap-2">
+
+                <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1 font-mono text-[10px] font-medium text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+                  {caseData.case_number}
+                </span>
+
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-zinc-100 px-2.5 py-1 text-[10px] font-medium capitalize text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+
+                  <span className="h-1.5 w-1.5 rounded-full bg-zinc-500" />
+
+                  {caseData.status}
+
+                </span>
+
+                <span className="rounded-full border border-zinc-200 px-2.5 py-1 text-[10px] font-medium capitalize text-zinc-500 dark:border-zinc-800">
+                  Severity:{" "}
+                  {caseData.severity}
+                </span>
+
+              </div>
+
+
+              <h1 className="mt-4 text-2xl font-semibold tracking-tight text-zinc-950 sm:text-3xl dark:text-white">
+                {caseData.name}
+              </h1>
+
+              {caseData.description && (
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500">
+                  {caseData.description}
+                </p>
+              )}
+
+            </div>
+
+
+            <div className="w-full xl:w-[360px]">
+
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
+                Active Evidence
+              </p>
+
+              <div className="relative">
+
+                <select
+                  value={
+                    selectedEvidenceId ??
+                    ""
+                  }
+                  onChange={(
+                    event
+                  ) => {
+                    setSelectedEvidenceId(
+                      event.target.value
+                    );
+                  }}
+                  className="w-full appearance-none rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 pr-10 text-xs font-medium text-zinc-800 outline-none transition focus:border-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+                >
+
+                  {evidence.length ===
+                  0 ? (
+                    <option value="">
+                      No evidence
+                    </option>
+                  ) : (
+                    evidence.map(
+                      (item) => (
+                        <option
+                          key={
+                            item.id
+                          }
+                          value={
+                            item.id
+                          }
+                        >
+                          {
+                            item.original_filename
+                          }
+                        </option>
+                      )
+                    )
+                  )}
+
+                </select>
+
+                <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">
+
+                  <Icon
+                    name="chevron"
+                    size={15}
+                  />
+
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+
+      </section>
+
+
+      {/* =================================================
+          TABS
+      ================================================= */}
+
+      <CaseTabs
+        activeTab={
+          activeTab
+        }
+        onChange={
+          setActiveTab
+        }
+      />
+
+
+      {/* =================================================
+          CONTENT
+      ================================================= */}
+
+      <section className="mx-auto max-w-[1600px] px-4 py-7 sm:px-6 lg:px-8">
+
+        {error && (
+          <div className="mb-6 flex items-start justify-between gap-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/20 dark:text-red-400">
+
+            <span>
+              {error}
+            </span>
+
+            <button
+              type="button"
+              onClick={() =>
+                setError(
+                  null
+                )
+              }
+              className="font-medium hover:underline"
+            >
+              Dismiss
+            </button>
+
+          </div>
+        )}
+
+        {renderTab()}
+
+      </section>
+
+    </main>
+  );
+}

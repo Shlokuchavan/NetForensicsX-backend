@@ -1,0 +1,582 @@
+@import "tailwindcss";
+
+/* =========================================================
+   NetForensicX — Forensic Command Center
+   Tailwind v4 CSS-first configuration.
+   ========================================================= */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* =========================================================
+   Design tokens
+   ========================================================= */
+@theme {
+  /* --- Surfaces (light defaults) --- */
+  --color-surface: rgb(255 255 255);
+  --color-surface-subtle: rgb(248 250 252);
+  --color-surface-raised: rgb(255 255 255);
+  --color-surface-overlay: rgb(241 245 249);
+
+  /* --- Content --- */
+  --color-content: rgb(15 23 42);
+  --color-content-muted: rgb(71 85 105);
+  --color-content-subtle: rgb(100 116 139);
+  --color-content-inverted: rgb(248 250 252);
+
+  /* --- Edges --- */
+  --color-edge: rgb(226 232 240);
+  --color-edge-strong: rgb(203 213 225);
+  --color-edge-subtle: rgb(241 245 249);
+
+  /* --- Accent --- */
+  --color-accent: rgb(8 145 178);
+  --color-accent-muted: rgb(6 182 212);
+  --color-accent-foreground: rgb(255 255 255);
+
+  /* --- Severity --- */
+  --color-severity-critical: rgb(220 38 38);
+  --color-severity-high: rgb(234 88 12);
+  --color-severity-medium: rgb(217 119 6);
+  --color-severity-low: rgb(2 132 199);
+  --color-severity-info: rgb(71 85 105);
+
+  /* --- Status --- */
+  --color-status-verified: rgb(22 163 74);
+  --color-status-pending: rgb(202 138 4);
+  --color-status-failed: rgb(220 38 38);
+
+  /* --- Atmosphere (used by the ambient backdrop) --- */
+  --color-atmos-cyan: rgb(34 211 238);
+  --color-atmos-violet: rgb(139 92 246);
+  --color-atmos-amber: rgb(245 158 11);
+  --color-grid: rgb(203 213 225);
+
+  /* --- Typography --- */
+  --font-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono), ui-monospace, SFMono-Regular, monospace;
+
+  /* --- Shadows --- */
+  --shadow-panel:
+    0 1px 0 0 rgb(226 232 240 / 0.6),
+    0 8px 24px -12px rgb(0 0 0 / 0.25);
+  --shadow-raised:
+    0 1px 0 0 rgb(226 232 240 / 0.7),
+    0 16px 40px -20px rgb(0 0 0 / 0.4);
+  --shadow-glow-cyan:
+    0 0 0 1px rgb(34 211 238 / 0.18),
+    0 0 32px -8px rgb(34 211 238 / 0.35);
+
+  /* --- Motion --- */
+  --ease-nfx-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-nfx-fast: 120ms;
+  --duration-nfx-base: 180ms;
+  --duration-nfx-slow: 280ms;
+
+  /* --- Animations --- */
+  --animate-nfx-fade-in: nfx-fade-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  --animate-nfx-slide-in: nfx-slide-in 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  --animate-nfx-rise: nfx-rise 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  --animate-nfx-pulse-ring: nfx-pulse-ring 1.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+  --animate-nfx-drift: nfx-drift 60s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+
+  @keyframes nfx-fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes nfx-slide-in {
+    from { opacity: 0; transform: translateX(-6px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes nfx-rise {
+    from { opacity: 0; transform: translateY(8px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes nfx-pulse-ring {
+    0%   { opacity: 0.9; transform: scale(1); }
+    70%  { opacity: 0;   transform: scale(1.6); }
+    100% { opacity: 0;   transform: scale(1.6); }
+  }
+  @keyframes nfx-drift {
+    0%   { transform: translate3d(0, 0, 0) scale(1); }
+    33%  { transform: translate3d(2%, -1.5%, 0) scale(1.05); }
+    66%  { transform: translate3d(-1.5%, 1%, 0) scale(1.03); }
+    100% { transform: translate3d(0, 0, 0) scale(1); }
+  }
+}
+
+
+/* =========================================================
+   Dark theme — overrides the light tokens above
+   ========================================================= */
+.dark {
+  --color-surface: rgb(8 11 17);
+  --color-surface-subtle: rgb(15 19 26);
+  --color-surface-raised: rgb(22 27 36);
+  --color-surface-overlay: rgb(30 37 48);
+
+  --color-content: rgb(241 245 249);
+  --color-content-muted: rgb(148 163 184);
+  --color-content-subtle: rgb(100 116 139);
+  --color-content-inverted: rgb(15 23 42);
+
+  --color-edge: rgb(30 41 59);
+  --color-edge-strong: rgb(51 65 85);
+  --color-edge-subtle: rgb(22 27 36);
+
+  --color-accent: rgb(34 211 238);
+  --color-accent-muted: rgb(6 182 212);
+  --color-accent-foreground: rgb(8 11 17);
+
+  --color-severity-critical: rgb(248 113 113);
+  --color-severity-high: rgb(251 146 60);
+  --color-severity-medium: rgb(251 191 36);
+  --color-severity-low: rgb(56 189 248);
+  --color-severity-info: rgb(148 163 184);
+
+  --color-status-verified: rgb(74 222 128);
+  --color-status-pending: rgb(250 204 21);
+  --color-status-failed: rgb(248 113 113);
+
+  --color-grid: rgb(30 41 59);
+}
+
+/* =========================================================
+   Base
+   ========================================================= */
+@layer base {
+  * {
+    border-color: var(--color-edge);
+  }
+
+  html {
+    color-scheme: light;
+    background-color: var(--color-surface);
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-surface);
+    color: var(--color-content);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    min-height: 100vh;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* --- Scrollbars --- */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-edge-strong) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--color-edge-strong);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-content-subtle);
+    background-clip: content-box;
+  }
+}
+
+/* =========================================================
+   Custom utilities
+   ========================================================= */
+
+/* Ambient drifting backdrop — sits behind app content */
+@utility nfx-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Fine forensic grid overlay */
+@utility nfx-grid-bg {
+  background-image:
+    linear-gradient(to right, var(--color-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-grid) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* Glass panel */
+@utility nfx-glass {
+  background-color: color-mix(in oklab, var(--color-surface-raised) 70%, transparent);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+}
+
+/* =========================================================
+   Theme transition — only during user-initiated switches
+   ========================================================= */
+html.nfx-theme-transition,
+html.nfx-theme-transition * {
+  transition:
+    background-color 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 220ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+/* =========================================================
+   Ambient backdrop markup (used by AmbientBackdrop component)
+   ========================================================= */
+.nfx-backdrop__layer {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.55;
+  will-change: transform;
+}
+
+html.dark .nfx-backdrop__layer {
+  opacity: 0.4;
+}
+
+.nfx-backdrop__layer--cyan {
+  width: 60vw;
+  height: 60vw;
+  top: -20vw;
+  left: -10vw;
+  background: radial-gradient(circle at center,
+    color-mix(in oklab, var(--color-atmos-cyan) 65%, transparent) 0%,
+    transparent 65%);
+  animation: var(--animate-nfx-drift);
+}
+
+.nfx-backdrop__layer--violet {
+  width: 55vw;
+  height: 55vw;
+  bottom: -18vw;
+  right: -12vw;
+  background: radial-gradient(circle at center,
+    color-mix(in oklab, var(--color-atmos-violet) 55%, transparent) 0%,
+    transparent 65%);
+  animation: var(--animate-nfx-drift);
+  animation-delay: -20s;
+}
+
+.nfx-backdrop__layer--amber {
+  width: 40vw;
+  height: 40vw;
+  top: 30%;
+  right: 20%;
+  background: radial-gradient(circle at center,
+    color-mix(in oklab, var(--color-atmos-amber) 45%, transparent) 0%,
+    transparent 60%);
+  animation: var(--animate-nfx-drift);
+  animation-delay: -40s;
+}
+
+.nfx-backdrop__grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, var(--color-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-grid) 1px, transparent 1px);
+  background-size: 32px 32px;
+  opacity: 0.04;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+}
+
+html.dark .nfx-backdrop__grid {
+  opacity: 0.06;
+}
+
+/* =========================================================
+   Reduced motion
+   ========================================================= */
+@media (prefers-reduced-motion: reduce) {
+  html.nfx-theme-transition,
+  html.nfx-theme-transition * {
+    transition: none !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .nfx-backdrop__layer {
+    animation: none !important;
+  }
+}
+/* =========================================================
+   App shell — curved floating chrome
+   ========================================================= */
+
+/* Floating top bar with rounded bottom corners */
+.nfx-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  margin: 0 12px;
+  border-radius: 0 0 18px 18px;
+  border: 1px solid var(--color-edge);
+  border-top: 0;
+  background:
+    linear-gradient(to bottom,
+      color-mix(in oklab, var(--color-surface-raised) 85%, transparent) 0%,
+      color-mix(in oklab, var(--color-surface-raised) 65%, transparent) 100%);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  box-shadow:
+    0 1px 0 0 color-mix(in oklab, white 8%, transparent) inset,
+    0 12px 32px -22px rgb(0 0 0 / 0.55);
+}
+
+/* The case header card */
+.nfx-case-hero {
+  position: relative;
+  border-radius: 20px;
+  padding: 1px;
+  background:
+    linear-gradient(135deg,
+      color-mix(in oklab, var(--color-accent) 35%, transparent) 0%,
+      color-mix(in oklab, var(--color-atmos-violet) 28%, transparent) 45%,
+      color-mix(in oklab, var(--color-edge) 60%, transparent) 100%);
+}
+
+.nfx-case-hero__inner {
+  border-radius: 19px;
+  background:
+    linear-gradient(to bottom right,
+      color-mix(in oklab, var(--color-surface-raised) 92%, transparent) 0%,
+      color-mix(in oklab, var(--color-surface) 92%, transparent) 100%);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+}
+
+/* Tab rail — pill-shaped, soft, hover-glow */
+.nfx-tab-rail {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--color-surface-subtle) 75%, transparent);
+  border: 1px solid var(--color-edge);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.nfx-tab-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.nfx-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-content-subtle);
+  white-space: nowrap;
+  transition:
+    color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.nfx-tab:hover {
+  color: var(--color-content);
+  background: color-mix(in oklab, var(--color-surface-overlay) 55%, transparent);
+}
+.nfx-tab[data-active="true"] {
+  color: var(--color-content);
+  background: color-mix(in oklab, var(--color-surface-raised) 95%, transparent);
+  box-shadow:
+    0 1px 0 0 color-mix(in oklab, white 6%, transparent) inset,
+    0 6px 18px -10px color-mix(in oklab, var(--color-accent) 55%, transparent),
+    0 0 0 1px color-mix(in oklab, var(--color-accent) 30%, transparent);
+}
+.nfx-tab[data-active="true"]::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -2px;
+  width: 24px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  transform: translateX(-50%);
+}
+
+/* Group label between tab clusters */
+.nfx-tab-group-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-content-subtle);
+}
+/* =========================================================
+   Sticky top-nav shell.
+   Prevents the "ghost text" / transparent content bug that
+   appears when a sticky element with backdrop-filter scrolls
+   over varying content. The outer wrapper gets an
+   almost-opaque background; the inner pill keeps the blur.
+   ========================================================= */
+.nfx-nav-shell {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background-color: color-mix(in oklab, var(--color-surface) 88%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+/* =========================================================
+   Case detail page — motion & polish
+   ========================================================= */
+
+/* Hero entry */
+@keyframes nfx-case-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.nfx-case-enter {
+  animation: nfx-case-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Panel entry — used for the top-level panels on the case page */
+@keyframes nfx-panel-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.nfx-panel-enter {
+  animation: nfx-panel-enter 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.nfx-panel-enter:nth-child(1) { animation-delay: 0ms; }
+.nfx-panel-enter:nth-child(2) { animation-delay: 40ms; }
+.nfx-panel-enter:nth-child(3) { animation-delay: 80ms; }
+.nfx-panel-enter:nth-child(4) { animation-delay: 120ms; }
+
+/* Animated sweep along the top of the case hero */
+@keyframes nfx-hero-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.nfx-hero-sweep {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  overflow: hidden;
+  pointer-events: none;
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+}
+.nfx-hero-sweep::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--color-accent) 80%, transparent),
+    transparent
+  );
+  animation: nfx-hero-sweep 4.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Interactive panel — hover lift */
+.nfx-panel-hover {
+  transition:
+    transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 200ms,
+    box-shadow 200ms;
+}
+.nfx-panel-hover:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 1px 0 0 color-mix(in oklab, white 6%, transparent) inset,
+    0 16px 40px -28px color-mix(in oklab, var(--color-accent) 60%, transparent);
+}
+
+/* Metric card — same behaviour, tighter scale */
+.nfx-metric {
+  transition:
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 160ms,
+    box-shadow 160ms;
+}
+.nfx-metric:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in oklab, var(--color-accent) 32%, var(--color-edge));
+  box-shadow:
+    0 12px 32px -22px color-mix(in oklab, var(--color-accent) 55%, transparent);
+}
+
+/* Table — polished row hover */
+.nfx-table-row {
+  transition:
+    background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 140ms;
+}
+.nfx-table-row:hover {
+  background-color: color-mix(in oklab, var(--color-surface-overlay) 55%, transparent);
+}
+
+/* Sub-navigation (sticky tab rail) */
+.nfx-subnav {
+  position: sticky;
+  top: calc(4.5rem + 4px);
+  z-index: 30;
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  background-color: color-mix(in oklab, var(--color-surface) 82%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--color-edge) 70%, transparent);
+  transition: box-shadow 200ms ease;
+}
+.nfx-subnav[data-scrolled="true"] {
+  box-shadow: 0 12px 28px -24px rgb(0 0 0 / 0.6);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nfx-case-enter,
+  .nfx-panel-enter,
+  .nfx-hero-sweep::before {
+    animation: none !important;
+  }
+  .nfx-panel-hover:hover,
+  .nfx-metric:hover {
+    transform: none !important;
+  }
+}
+
+/* Fallback: if the browser doesn't support color-mix,
+   fall back to a nearly-solid surface. */
+@supports not (background-color: color-mix(in oklab, red 50%, blue)) {
+  .nfx-nav-shell {
+    background-color: var(--color-surface);
+  }
+}
