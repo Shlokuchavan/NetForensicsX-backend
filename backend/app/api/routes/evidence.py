@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.evidence import UPLOAD_DIR, save_evidence_file
 
 from app.db.session import get_db
 from app.models.case import Case
