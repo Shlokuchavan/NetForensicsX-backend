@@ -22,37 +22,31 @@ router = APIRouter(
 )
 
 
-@router.post(
-    "",
-    response_model=EvidenceRead,
-)
+
+@router.post("", response_model=EvidenceRead)
 async def upload_evidence(
-    case_id: uuid.UUID,
+    case_id: UUID,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
     case = await db.get(Case, case_id)
-
-    if not case:
+    if case is None:
         raise HTTPException(
             status_code=404,
             detail="Case not found",
         )
 
     try:
-        (
-            stored_filename,
-            sha256,
-            file_size,
-        ) = await save_evidence_file(file)
-
+        stored_filename, sha256, file_size = (
+            await save_evidence_file(file)
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
             detail=str(exc),
         ) from exc
 
-        evidence = Evidence(
+    evidence = Evidence(
         case_id=case_id,
         original_filename=file.filename,
         stored_filename=stored_filename,
@@ -65,10 +59,8 @@ async def upload_evidence(
     )
 
     db.add(evidence)
-
     await db.commit()
     await db.refresh(evidence)
-
     return evidence
 
 
