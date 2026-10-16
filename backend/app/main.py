@@ -24,7 +24,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
      allow_origins=[
-        "https://net-forensics-x-frontend.vercel.app",
+        "https://netforensicx.vercel.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
