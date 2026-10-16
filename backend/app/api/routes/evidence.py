@@ -52,11 +52,11 @@ async def upload_evidence(
             detail=str(exc),
         ) from exc
 
-    evidence = Evidence(
+        evidence = Evidence(
         case_id=case_id,
         original_filename=file.filename,
         stored_filename=stored_filename,
-        file_path=f"/evidence/uploads/{stored_filename}",
+        file_path=str(UPLOAD_DIR / stored_filename),
         file_size=file_size,
         sha256=sha256,
         mime_type=file.content_type,
