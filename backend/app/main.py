@@ -1,3 +1,4 @@
+
 from app.db import init_db
 from contextlib import asynccontextmanager
 
@@ -23,8 +24,9 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-     allow_origins=[
+    allow_origins=[
         "https://netforensicx.vercel.app",
+        "https://net-forensics-x-frontend.vercel.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
